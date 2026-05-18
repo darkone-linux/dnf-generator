@@ -2,7 +2,7 @@
 //! [`Configuration`] (users, hosts, zones, services, DNS records).
 //!
 //! The structure mirrors the original PHP `Configuration` class:
-//! 1. parse + deep-merge `usr/config.yaml` and `var/generated/config.yaml`
+//! 1. parse + deep-merge `etc/config.yaml` and `var/generated/config.yaml`
 //! 2. load network defaults
 //! 3. load zones (and their `extraHosts`)
 //! 4. load users (regular + special `nix` maintenance user)

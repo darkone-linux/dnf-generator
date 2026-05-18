@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use dnf_generator::generate::Generate;
 
 /// Set up a temporary project root with:
-/// - usr/config.yaml (our test fixture)
+/// - etc/config.yaml (our test fixture)
 /// - var/generated/config.yaml (empty overlay)
 /// - dnf/home/profiles/{profile}/ for each profile used in the fixture
 /// - dnf/hosts/disko/{profile}.nix for each disko profile in the fixture
@@ -50,11 +50,11 @@ fn setup_test_root() -> (TempDir, PathBuf) {
     .unwrap();
 
     // YAML paths
-    fs::create_dir_all(root.join("usr")).unwrap();
+    fs::create_dir_all(root.join("etc")).unwrap();
     fs::create_dir_all(root.join("var/generated")).unwrap();
 
     fs::write(
-        root.join("usr/config.yaml"),
+        root.join("etc/config.yaml"),
         include_str!("fixtures/config.yaml"),
     )
     .unwrap();
@@ -68,7 +68,7 @@ fn setup_test_root() -> (TempDir, PathBuf) {
 }
 
 fn make_generate(root: &Path) -> Generate {
-    let main_yaml = root.join("usr/config.yaml");
+    let main_yaml = root.join("etc/config.yaml");
     let gen_yaml = root.join("var/generated/config.yaml");
     Generate::new(&main_yaml, &gen_yaml).expect("Generate::new should succeed")
 }
