@@ -1,1 +1,12 @@
-target
+/.*
+!/.gitignore
+!/.ignore
+!/.specs
+!/.github
+/*.md
+!/README.*
+!/TODO.*
+!/CHANGELOG.*
+/result/
+/target/
+tmp/
