@@ -20,7 +20,7 @@
   # its own (build, run, dev shell) without going through the framework.
 
   outputs =
-    { nixpkgs }:
+    { nixpkgs, ... }:
     let
 
       supportedSystems = [

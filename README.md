@@ -1,5 +1,9 @@
 # dnf-generator
 
+[![Cargo Tests](https://github.com/darkone-linux/dnf-generator/actions/workflows/cargo-tests.yml/badge.svg)](https://github.com/darkone-linux/dnf-generator/actions/workflows/cargo-tests.yml)
+[![Rust Edition 2021](https://img.shields.io/badge/Rust-edition%202021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 Configuration generator for the
 [Darkone NixOS Framework](https://github.com/darkone-linux/darkone-nixos-framework).
 
