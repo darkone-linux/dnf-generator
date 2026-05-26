@@ -9,6 +9,7 @@ pub const REVERSE_PROXY_SERVICES: &[&str] = &[
     "dex",
     "element",
     "forgejo",
+    "geneweb",
     "home-assistant",
     "homepage",
     "immich",
