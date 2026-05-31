@@ -1,18 +1,24 @@
 use std::path::PathBuf;
 
 use dnf_generator::generate::Generate;
+use dnf_generator::nix_generator::nix_service::ServiceRegistry;
 
 /// The generator bootstrap.
 ///
 /// CLI:
-///   dnf-generator <command> [--workdir <path>] [--debug]
+///   dnf-generator <command> [--workdir <path>] [--service-registry <path>] [--debug]
 ///
 /// `<command>` is one of `hosts`, `users`, `network`, `disko`, `doc`.
 /// `--workdir` defaults to the current working directory. The generator
 /// reads `<workdir>/etc/config.yaml` and writes
 /// `<workdir>/var/generated/*.nix`.
+/// `--service-registry` is the JSON map of per-service topology flags produced
+/// by `just generate` (`nix eval`); defaults to
+/// `<workdir>/var/generated/service-registry.json`. A missing file is treated
+/// as an empty registry (all flags false).
 fn main() {
     let mut workdir: Option<PathBuf> = None;
+    let mut registry_path: Option<PathBuf> = None;
     let mut command: Option<String> = None;
     let mut debug = false;
 
@@ -22,9 +28,15 @@ fn main() {
             "--workdir" | "-w" => {
                 workdir = iter.next().map(PathBuf::from);
             }
+            "--service-registry" => {
+                registry_path = iter.next().map(PathBuf::from);
+            }
             "--debug" | "debug" => debug = true,
             other if other.starts_with("--workdir=") => {
                 workdir = Some(PathBuf::from(&other["--workdir=".len()..]));
+            }
+            other if other.starts_with("--service-registry=") => {
+                registry_path = Some(PathBuf::from(&other["--service-registry=".len()..]));
             }
             _ if command.is_none() => command = Some(arg),
             _ => {
@@ -41,8 +53,18 @@ fn main() {
 
     let main_yaml = workdir.join("etc/config.yaml");
     let generated_yaml = workdir.join("var/generated/config.yaml");
+    let registry_path =
+        registry_path.unwrap_or_else(|| workdir.join("var/generated/service-registry.json"));
 
-    match Generate::new(&main_yaml, &generated_yaml) {
+    let registry = match ServiceRegistry::load(&registry_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ERR: cannot load service registry {}: {e}", registry_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    match Generate::new(&main_yaml, &generated_yaml, registry) {
         Ok(generator) => match generator.run(&command) {
             Ok(output) => print!("{output}"),
             Err(e) => {

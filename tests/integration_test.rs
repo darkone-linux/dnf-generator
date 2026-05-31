@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use dnf_generator::generate::Generate;
+use dnf_generator::nix_generator::nix_service::ServiceRegistry;
 
 /// Set up a temporary project root with:
 /// - etc/config.yaml (our test fixture)
@@ -70,7 +71,13 @@ fn setup_test_root() -> (TempDir, PathBuf) {
 fn make_generate(root: &Path) -> Generate {
     let main_yaml = root.join("etc/config.yaml");
     let gen_yaml = root.join("var/generated/config.yaml");
-    Generate::new(&main_yaml, &gen_yaml).expect("Generate::new should succeed")
+
+    // Service topology flags now live in the NixOS modules; the test loads a
+    // fixture registry reproducing the historical hard-coded lists so DNS/proxy
+    // expectations stay identical.
+    let registry = ServiceRegistry::from_str(include_str!("fixtures/service-registry.json"))
+        .expect("fixture service registry should parse");
+    Generate::new(&main_yaml, &gen_yaml, registry).expect("Generate::new should succeed")
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

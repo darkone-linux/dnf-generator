@@ -20,6 +20,7 @@ use crate::error::{NixError, Result};
 use crate::nix_generator::item::host::{Host, ServiceParams};
 use crate::nix_generator::item::user::{filter_profile, User, UserBuildConfig};
 use crate::nix_generator::nix_network::NixNetwork;
+use crate::nix_generator::nix_service::ServiceRegistry;
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
 use crate::nix_generator::yaml::{as_str_opt, as_string_vec, deep_merge, to_string_map};
 
@@ -42,7 +43,11 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    pub fn load(main_yaml: &Path, generated_yaml: &Path) -> Result<Self> {
+    pub fn load(
+        main_yaml: &Path,
+        generated_yaml: &Path,
+        registry: ServiceRegistry,
+    ) -> Result<Self> {
         let main_str = std::fs::read_to_string(main_yaml)?;
         // The generated YAML acts as an overlay: it may not yet exist on a
         // fresh checkout, in which case we treat it as an empty mapping.
@@ -68,6 +73,9 @@ impl Configuration {
             network: NixNetwork::default(),
             host_records: vec![],
         };
+
+        // Topology flags consumed by `register_services` and DNS computation.
+        cfg.network.registry = registry;
 
         cfg.load_network(&merged)?;
         cfg.load_zones(&merged)?;

@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 
 use crate::error::{NixError, Result};
 use crate::nix_generator::item::host::ServiceParams;
-use crate::nix_generator::nix_service::{NixService, UNIQUE_SERVICES_BY_ZONE};
+use crate::nix_generator::nix_service::{NixService, ServiceRegistry};
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
 use crate::nix_generator::validation::{
     assert_email, assert_regex, RE_FQDN, RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
@@ -37,6 +37,8 @@ pub struct NixNetwork {
     uniq_services: HashMap<(String, String), bool>,
     /// Track global service domain names to detect conflicts
     global_service_domains: HashSet<String>,
+    /// Per-service topology flags, extracted from the NixOS service modules.
+    pub registry: ServiceRegistry,
 }
 
 impl NixNetwork {
@@ -80,7 +82,7 @@ impl NixNetwork {
             let service_domain = params.domain.as_deref().unwrap_or(service_name);
 
             // Services that must be unique per zone
-            if UNIQUE_SERVICES_BY_ZONE.contains(&service_name.as_str()) {
+            if self.registry.flags(service_name).unique_per_zone {
                 let key = (zone.to_string(), service_name.clone());
                 if self.uniq_services.contains_key(&key) {
                     return Err(NixError::validation(format!(
@@ -256,6 +258,8 @@ mod tests {
     #[test]
     fn register_unique_service_per_zone() {
         let mut net = NixNetwork::default();
+        net.registry = ServiceRegistry::from_str(r#"{ "adguardhome": { "unique_per_zone": true } }"#)
+            .unwrap();
         let s1: IndexMap<_, _> = [make_service("adguardhome", false)].into_iter().collect();
         let s2: IndexMap<_, _> = [make_service("adguardhome", false)].into_iter().collect();
         net.register_services("dns1", "lab", &s1).unwrap();

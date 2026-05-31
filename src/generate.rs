@@ -14,9 +14,7 @@ use crate::error::{NixError, Result};
 use crate::nix_generator::configuration::Configuration;
 use crate::nix_generator::item::host::{DiskoConfig, Host, ServiceParams};
 use crate::nix_generator::nix_builder::array_to_nix;
-use crate::nix_generator::nix_service::{
-    NixService, EXTERNAL_ACCESS_SERVICES, REVERSE_PROXY_SERVICES,
-};
+use crate::nix_generator::nix_service::{NixService, ServiceRegistry};
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
 use crate::nix_generator::token::{NixAttrSet, NixList};
 
@@ -31,14 +29,18 @@ pub struct Generate {
 }
 
 impl Generate {
-    pub fn new(main_yaml: &Path, generated_yaml: &Path) -> Result<Self> {
+    pub fn new(
+        main_yaml: &Path,
+        generated_yaml: &Path,
+        registry: ServiceRegistry,
+    ) -> Result<Self> {
         let project_root = main_yaml
             .parent()
             .and_then(|p| p.parent())
             .ok_or_else(|| NixError::generate("Cannot determine project root from YAML path"))?
             .to_path_buf();
 
-        let config = Configuration::load(main_yaml, generated_yaml)?;
+        let config = Configuration::load(main_yaml, generated_yaml, registry)?;
         Ok(Self {
             config,
             project_root,
@@ -263,8 +265,8 @@ impl Generate {
                 .and_then(|h| h.ip.as_deref());
 
             if svc.zone == EXTERNAL_ZONE_KEY {
-                // www: only EXTERNAL_ACCESS services are reachable from the LAN.
-                if EXTERNAL_ACCESS_SERVICES.contains(&svc.name.as_str()) {
+                // www: only external-access services are reachable from the LAN.
+                if self.config.network.registry.flags(&svc.name).external_access {
                     if let Some(ip) = host_ip {
                         let fqdn = svc.fqdn(
                             svc_zone.map(|z| z.domain()).unwrap_or(network_domain),
@@ -276,7 +278,7 @@ impl Generate {
             } else if let Some(svc_zone_ref) = svc_zone {
                 // Reverse-proxied services share the gateway's IP; everything
                 // else points at the host's own IP.
-                let ip = if REVERSE_PROXY_SERVICES.contains(&svc.name.as_str()) {
+                let ip = if self.config.network.registry.flags(&svc.name).reverse_proxy {
                     svc_zone_ref.gateway_lan_ip().map(str::to_string)
                 } else {
                     host_ip.map(str::to_string)
@@ -361,7 +363,7 @@ impl Generate {
             if svc.zone != EXTERNAL_ZONE_KEY || !svc.global {
                 continue;
             }
-            if EXTERNAL_ACCESS_SERVICES.contains(&svc.name.as_str()) {
+            if self.config.network.registry.flags(&svc.name).external_access {
                 continue;
             }
             entries.push(format!(
