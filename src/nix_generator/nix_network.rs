@@ -258,8 +258,8 @@ mod tests {
     #[test]
     fn register_unique_service_per_zone() {
         let mut net = NixNetwork::default();
-        net.registry = ServiceRegistry::from_str(r#"{ "adguardhome": { "unique_per_zone": true } }"#)
-            .unwrap();
+        net.registry =
+            ServiceRegistry::from_nix(r#"{ adguardhome = { uniquePerZone = true; }; }"#).unwrap();
         let s1: IndexMap<_, _> = [make_service("adguardhome", false)].into_iter().collect();
         let s2: IndexMap<_, _> = [make_service("adguardhome", false)].into_iter().collect();
         net.register_services("dns1", "lab", &s1).unwrap();

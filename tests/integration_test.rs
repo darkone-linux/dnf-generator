@@ -75,7 +75,7 @@ fn make_generate(root: &Path) -> Generate {
     // Service topology flags now live in the NixOS modules; the test loads a
     // fixture registry reproducing the historical hard-coded lists so DNS/proxy
     // expectations stay identical.
-    let registry = ServiceRegistry::from_str(include_str!("fixtures/service-registry.json"))
+    let registry = ServiceRegistry::from_nix(include_str!("fixtures/modules.nix"))
         .expect("fixture service registry should parse");
     Generate::new(&main_yaml, &gen_yaml, registry).expect("Generate::new should succeed")
 }

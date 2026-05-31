@@ -1,20 +1,12 @@
-//! Service model + the per-service topology flags the generator needs.
-//!
-//! The flags (reverse-proxy / unique-per-zone / external-access) are NOT
-//! hard-coded here anymore: they are declared in each service's NixOS module
-//! (`darkone.system.services.service.<name>`) and extracted by `just generate`
-//! via `nix eval` into `var/generated/service-registry.json`, which is loaded
-//! into a [`ServiceRegistry`]. A service absent from the registry falls back to
-//! all-false flags (plain host-local service, no proxy, not unique, not external).
-
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::error::Result;
+use rnix::ast::{Attr, Expr, HasEntry};
 
-/// Topology flags for a single service, mirroring the Nix options
-/// `darkone.system.services.service.<name>.{reverseProxy,uniquePerZone,externalAccess}`.
-#[derive(Debug, Default, Clone, Copy)]
+use crate::error::{NixError, Result};
+
+/// Topology flags for a single service, read from `dnf/config/modules.nix`.
+#[derive(Debug, Clone, Copy)]
 pub struct ServiceFlags {
     /// Reached through the zone gateway reverse proxy (DNS points to gateway LAN IP).
     pub reverse_proxy: bool,
@@ -26,49 +18,99 @@ pub struct ServiceFlags {
     pub external_access: bool,
 }
 
-/// Service-name → flags map, loaded from the generated JSON registry.
+/// Defaults match the modules.nix header: reverseProxy=true, others false.
+impl Default for ServiceFlags {
+    fn default() -> Self {
+        Self {
+            reverse_proxy: true,
+            unique_per_zone: false,
+            external_access: false,
+        }
+    }
+}
+
+/// Service-name → flags map, loaded from `dnf/config/modules.nix`.
 #[derive(Debug, Default, Clone)]
 pub struct ServiceRegistry {
     map: HashMap<String, ServiceFlags>,
 }
 
 impl ServiceRegistry {
-    /// Parse a registry from a JSON (or YAML — superset) string.
-    ///
-    /// We deserialize into a permissive `name -> { flag -> bool }` map and build
-    /// [`ServiceFlags`] by hand: serde_yaml 0.9 mishandles `#[serde(default)]`
-    /// bool fields in flow mappings, so an explicit lookup is both robust and
-    /// forward-compatible (unknown flags are simply ignored).
-    pub fn from_str(content: &str) -> Result<Self> {
-        let raw: HashMap<String, HashMap<String, bool>> = serde_yaml::from_str(content)?;
-        let map = raw
-            .into_iter()
-            .map(|(name, flags)| {
-                let get = |k: &str| flags.get(k).copied().unwrap_or(false);
-                (
-                    name,
-                    ServiceFlags {
-                        reverse_proxy: get("reverse_proxy"),
-                        unique_per_zone: get("unique_per_zone"),
-                        external_access: get("external_access"),
-                    },
-                )
-            })
-            .collect();
+    /// Parse a registry from `modules.nix` Nix source.
+    /// Keys are camelCase (`reverseProxy`, `uniquePerZone`, `externalAccess`).
+    /// Flags absent from a service entry use the defaults (see `ServiceFlags::default`).
+    pub fn from_nix(content: &str) -> Result<Self> {
+        let parsed = rnix::Root::parse(content);
+        let Some(Expr::AttrSet(root_set)) = parsed.tree().expr() else {
+            return Err(NixError::generate("modules.nix: expected attrset at root"));
+        };
+
+        let mut map = HashMap::new();
+
+        for av in root_set.attrpath_values() {
+            let (Some(attrpath), Some(Expr::AttrSet(svc_set))) = (av.attrpath(), av.value())
+            else {
+                continue;
+            };
+
+            let name = attrpath
+                .attrs()
+                .next()
+                .and_then(|a| match a {
+                    Attr::Ident(i) => i.ident_token().map(|t| t.text().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            if name.is_empty() {
+                continue;
+            }
+
+            let mut flags = ServiceFlags::default();
+
+            for svc_av in svc_set.attrpath_values() {
+                let (Some(key_path), Some(val)) = (svc_av.attrpath(), svc_av.value()) else {
+                    continue;
+                };
+                let key = key_path
+                    .attrs()
+                    .next()
+                    .and_then(|a| match a {
+                        Attr::Ident(i) => i.ident_token().map(|t| t.text().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                let bool_val = if let Expr::Ident(i) = &val {
+                    i.ident_token().map(|t| t.text() == "true").unwrap_or(false)
+                } else {
+                    false
+                };
+
+                match key.as_str() {
+                    "reverseProxy" => flags.reverse_proxy = bool_val,
+                    "uniquePerZone" => flags.unique_per_zone = bool_val,
+                    "externalAccess" => flags.external_access = bool_val,
+                    _ => {}
+                }
+            }
+
+            map.insert(name, flags);
+        }
+
         Ok(Self { map })
     }
 
-    /// Load the registry from disk. A missing file yields an empty registry so
-    /// that generation still works on a fresh checkout (all flags default false).
+    /// Load from `modules.nix`. Missing file → empty registry (all defaults).
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
-        Self::from_str(&content)
+        Self::from_nix(&content)
     }
 
-    /// Flags for `name`, or all-false defaults if the service is unknown.
+    /// Flags for `name`, or defaults if the service is unknown.
     pub fn flags(&self, name: &str) -> ServiceFlags {
         self.map.get(name).copied().unwrap_or_default()
     }
@@ -106,8 +148,6 @@ impl NixService {
     }
 
     /// Build the fully-qualified domain name for this service.
-    /// `zone_domain`: the zone's domain (e.g. "lab.example.lan")
-    /// `network_domain`: the global network domain (e.g. "example.lan")
     pub fn fqdn(&self, zone_domain: &str, network_domain: &str) -> String {
         let label = self.domain_label();
         if self.global {
@@ -152,32 +192,50 @@ mod tests {
     }
 
     #[test]
-    fn registry_parses_flags() {
-        let reg = ServiceRegistry::from_str(
-            r#"{
-              "ncps": { "unique_per_zone": true },
-              "headscale": { "external_access": true },
-              "nextcloud": { "reverse_proxy": true }
-            }"#,
-        )
-        .unwrap();
+    fn registry_parses_nix_flags() {
+        let nix = r#"{
+          ncps = { reverseProxy = false; uniquePerZone = true; };
+          headscale = { reverseProxy = false; externalAccess = true; };
+          nextcloud = {};
+          turn = { externalAccess = true; };
+        }"#;
+        let reg = ServiceRegistry::from_nix(nix).unwrap();
+        assert!(!reg.flags("ncps").reverse_proxy);
         assert!(reg.flags("ncps").unique_per_zone);
+        assert!(!reg.flags("headscale").reverse_proxy);
         assert!(reg.flags("headscale").external_access);
-        assert!(reg.flags("nextcloud").reverse_proxy);
+        assert!(reg.flags("nextcloud").reverse_proxy); // default = true
+        assert!(!reg.flags("nextcloud").unique_per_zone);
+        assert!(reg.flags("turn").external_access);
+        assert!(reg.flags("turn").reverse_proxy); // default = true
     }
 
     #[test]
-    fn registry_unknown_service_is_all_false() {
+    fn registry_ignores_non_topology_keys() {
+        let nix = r#"{
+          ncps = {
+            reverseProxy = false;
+            description = "something";
+            activation.profiles.minimal.triggers.keys.ncps = [ "enable" ];
+          };
+        }"#;
+        let reg = ServiceRegistry::from_nix(nix).unwrap();
+        assert!(!reg.flags("ncps").reverse_proxy);
+        assert!(!reg.flags("ncps").unique_per_zone);
+    }
+
+    #[test]
+    fn registry_unknown_service_defaults_reverse_proxy() {
         let reg = ServiceRegistry::default();
         let f = reg.flags("whatever");
-        assert!(!f.reverse_proxy);
+        assert!(f.reverse_proxy); // default = true
         assert!(!f.unique_per_zone);
         assert!(!f.external_access);
     }
 
     #[test]
     fn registry_missing_file_is_empty() {
-        let reg = ServiceRegistry::load(Path::new("/nonexistent/registry.json")).unwrap();
-        assert!(!reg.flags("anything").reverse_proxy);
+        let reg = ServiceRegistry::load(Path::new("/nonexistent/modules.nix")).unwrap();
+        assert!(reg.flags("anything").reverse_proxy); // default = true
     }
 }
