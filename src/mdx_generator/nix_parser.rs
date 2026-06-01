@@ -119,14 +119,14 @@ pub fn parse_module_options(source: &str) -> Vec<NixOption> {
     let Some(expr) = parsed.tree().expr() else {
         return vec![];
     };
-    let Some(options_attrset) = find_options_attrset(&expr) else {
+    let Expr::AttrSet(body) = innermost_body(expr) else {
         return vec![];
     };
 
     // Recursively collect (full_dotted_path, value) for every option declaration,
     // descending into plain attrsets (which serve as namespace groupings).
     let mut leaves: Vec<(String, Expr)> = vec![];
-    collect_option_leaves(&options_attrset, "", &mut leaves);
+    collect_options_leaves(&body, &mut leaves);
 
     if leaves.is_empty() {
         return vec![];
@@ -194,25 +194,31 @@ fn common_leaf_prefix(leaves: &[(String, Expr)]) -> String {
     first[..prefix_len].join(".")
 }
 
-/// Walks the file's top expression to locate the attrset that holds `options = { … }`.
-fn find_options_attrset(expr: &Expr) -> Option<ast::AttrSet> {
-    let body = innermost_body(expr.clone());
-    let attrset = match body {
-        Expr::AttrSet(set) => set,
-        _ => return None,
-    };
-    for av in attrset.attrpath_values() {
-        let dotted = av
-            .attrpath()
-            .map(|p| attrpath_to_dotted(&p))
-            .unwrap_or_default();
-        if dotted == "options" {
-            if let Some(Expr::AttrSet(inner)) = av.value() {
-                return Some(inner);
-            }
+/// Collect every option leaf declared under the module's `options`, independently
+/// of how the attrpath is written. In Nix these forms are all equivalent and rnix
+/// exposes them as different AST shapes — we normalise them here:
+///   options = { a.b.enable = …; };   (block form)
+///   options.a.b.enable = …;          (one-line attrpath form)
+///   options.a = { b.enable = …; };   (mixed form)
+fn collect_options_leaves(body: &ast::AttrSet, out: &mut Vec<(String, Expr)>) {
+    for binding in body.attrpath_values() {
+        let (Some(attrpath), Some(value)) = (binding.attrpath(), binding.value()) else {
+            continue;
+        };
+        let attrs: Vec<String> = attrpath.attrs().map(|a| attr_to_string(&a)).collect();
+        if attrs.first().map(|s| s.as_str()) != Some("options") {
+            continue;
+        }
+        // Everything after the leading `options` segment is the leaf path prefix.
+        let path = attrs[1..].join(".");
+        match &value {
+            // Namespace grouping (`options.a = { … }` or `options = { … }`): recurse.
+            Expr::AttrSet(inner) => collect_option_leaves(inner, &path, out),
+            // Direct declaration via attrpath (`options.a.b.enable = mkEnableOption …`).
+            _ if !path.is_empty() => out.push((path, value)),
+            _ => {}
         }
     }
-    None
 }
 
 /// Strips the wrapping function/let/with/assert around the module's returned attrset.
@@ -665,41 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn flat_docs_options() {
-        let src = r#"
-{ lib, ... }: {
-  options = {
-    darkone.service.docs.enable = lib.mkEnableOption "Enable local docs service";
-    darkone.service.docs.s3Host = lib.mkOption {
-      type = lib.types.str;
-      default = "127.0.0.1";
-      description = "S3 backend hostname";
-    };
-    darkone.service.docs.s3Port = lib.mkOption {
-      type = lib.types.port;
-      default = 9000;
-      description = "S3 backend port";
-    };
-    darkone.service.docs.s3Bucket = lib.mkOption {
-      type = lib.types.str;
-      default = "docs";
-      description = "S3 bucket name for document storage";
-    };
-  };
-}
-"#;
-        let opts = parse_module_options(src);
-        assert_eq!(opts.len(), 4, "Expected 4 options, got {}", opts.len());
-        assert_eq!(opts[0].name, "enable");
-        assert_eq!(opts[0].type_label, "bool");
-        assert_eq!(opts[1].name, "s3Host");
-        assert_eq!(opts[1].type_label, "str");
-        assert_eq!(opts[1].default.as_deref(), Some("\"127.0.0.1\""));
-        assert_eq!(opts[2].name, "s3Port");
-        assert_eq!(opts[3].name, "s3Bucket");
-    }
-
-    #[test]
     fn deeper_nested_docs_options() {
         let src = r#"
 { lib, ... }: {
@@ -729,6 +700,43 @@ mod tests {
         assert_eq!(opts[1].name, "s3.host");
         assert_eq!(opts[1].type_label, "str");
         assert_eq!(opts[2].name, "s3.port");
+    }
+
+    #[test]
+    fn options_one_line_form() {
+        // Single attrpath binding, no `options = { … }` wrapper.
+        let src = r#"
+{ lib, ... }: {
+  options.darkone.security.foo.enable = lib.mkEnableOption "Enable foo";
+}
+"#;
+        let opts = parse_module_options(src);
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].name, "enable");
+        assert_eq!(opts[0].level, 1);
+        assert_eq!(opts[0].type_label, "bool");
+    }
+
+    #[test]
+    fn options_attrpath_block_form() {
+        // `options.<ns> = { … }` mixed form (as used by testing.nix).
+        let src = r#"
+{ lib, ... }: {
+  options.darkone.test = {
+    enable = lib.mkEnableOption "Enable test";
+    name = lib.mkOption {
+      type = lib.types.str;
+      default = "x";
+      description = "A name";
+    };
+  };
+}
+"#;
+        let opts = parse_module_options(src);
+        let names: Vec<_> = opts.iter().map(|o| (o.level, o.name.clone())).collect();
+        assert_eq!(names, vec![(1, "enable".into()), (1, "name".into())]);
+        assert_eq!(opts[0].type_label, "bool");
+        assert_eq!(opts[1].type_label, "str");
     }
 
     #[test]

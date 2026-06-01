@@ -284,6 +284,28 @@ mod tests {
     }
 
     #[test]
+    fn renders_one_line_module() {
+        let dir = tempdir().unwrap();
+        let dnf = dir.path().join("dnf/modules/security");
+        fs::create_dir_all(&dnf).unwrap();
+        fs::write(
+            dnf.join("foo.nix"),
+            r#"# A foo service.
+{ lib, ... }: {
+  options.darkone.security.foo.enable = lib.mkEnableOption "Enable foo";
+}
+"#,
+        )
+        .unwrap();
+
+        let mdx = generate_mdx(dir.path());
+        assert!(mdx.contains("### &#x1F511; darkone.security.foo"));
+        assert!(mdx.contains("A foo service."));
+        assert!(mdx.contains("* **enable** `bool` Enable foo"));
+        assert!(mdx.contains("darkone.security.foo.enable = false;"));
+    }
+
+    #[test]
     fn renders_submodule_block() {
         let dir = tempdir().unwrap();
         let dnf = dir.path().join("dnf/modules/system");
