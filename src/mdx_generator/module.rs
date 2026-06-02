@@ -4,6 +4,9 @@
 //! `nix_parser` and `mdx_writer`.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 use crate::mdx_generator::mdx_writer::escape;
 use crate::mdx_generator::nix_parser::{
@@ -12,6 +15,33 @@ use crate::mdx_generator::nix_parser::{
 
 const FRONTMATTER: &str =
     "---\ntitle: Modules\nsidebar:\n  order: 1\n  badge:\n    text: New\n    variant: tip\n---\n";
+
+/// Language of the generated page. Starlight serves every page under
+/// `/<lang>/`, so root-absolute internal links must carry this prefix. The
+/// translation step (`scripts/translate.mjs`) later rewrites `/en/` → `/fr/`
+/// for the localized pages, so emitting the source language here is enough.
+const LANG: &str = "en";
+
+static INTERNAL_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\]\(/([^)]*)\)").unwrap());
+
+/// Prepend the page locale to root-absolute internal Markdown links written
+/// without one (e.g. `](/ref/modules/#...)` → `](/en/ref/modules/#...)`).
+/// Links already carrying a 2-letter locale prefix, anchors (`](#...)`) and
+/// external URLs (`](http...)`) are left untouched.
+fn localize_links(content: &str) -> String {
+    INTERNAL_LINK
+        .replace_all(content, |caps: &regex::Captures| {
+            let path = &caps[1];
+            let first = path.split('/').next().unwrap_or("");
+            let is_locale = first.len() == 2 && first.chars().all(|c| c.is_ascii_lowercase());
+            if is_locale {
+                format!("](/{path})")
+            } else {
+                format!("](/{LANG}/{path})")
+            }
+        })
+        .into_owned()
+}
 
 struct Category {
     title: &'static str,
@@ -100,7 +130,7 @@ pub fn generate_mdx(project_root: &Path) -> String {
         let dir = project_root.join(category.relative_dir);
         sections.push(render_category(category, &dir));
     }
-    format!("{FRONTMATTER}\n{}", sections.join("\n\n"))
+    localize_links(&format!("{FRONTMATTER}\n{}", sections.join("\n\n")))
 }
 
 fn render_category(category: &Category, dir: &Path) -> String {
@@ -303,6 +333,32 @@ mod tests {
         assert!(mdx.contains("A foo service."));
         assert!(mdx.contains("* **enable** `bool` Enable foo"));
         assert!(mdx.contains("darkone.security.foo.enable = false;"));
+    }
+
+    #[test]
+    fn localizes_unprefixed_internal_links() {
+        let dir = tempdir().unwrap();
+        let dnf = dir.path().join("dnf/modules/service");
+        fs::create_dir_all(&dnf).unwrap();
+        fs::write(
+            dnf.join("adguardhome.nix"),
+            r#"# Uses the [dnsmasq module](/ref/modules/#-darkoneservicednsmasq) as upstream.
+# See also [the fr page](/fr/ref/modules/#x) and [home](https://example.com).
+{ lib, ... }: {
+  options.darkone.service.adguardhome.enable = lib.mkEnableOption "Enable";
+}
+"#,
+        )
+        .unwrap();
+
+        let mdx = generate_mdx(dir.path());
+        // Unprefixed internal link gets the page locale.
+        assert!(mdx.contains("](/en/ref/modules/#-darkoneservicednsmasq)"));
+        // Already-localized and external links are left untouched.
+        assert!(mdx.contains("](/fr/ref/modules/#x)"));
+        assert!(mdx.contains("](https://example.com)"));
+        // No root-absolute link without a locale prefix remains.
+        assert!(!mdx.contains("](/ref/"));
     }
 
     #[test]
