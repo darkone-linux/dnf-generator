@@ -23,7 +23,7 @@ use crate::mdx_generator::nix_parser::{
 const DOC_DIR: &str = "doc/src/content/docs/en/ref";
 
 const INDEX_FRONTMATTER: &str =
-    "---\ntitle: Modules\nsidebar:\n  order: 1\n  badge:\n    text: New\n    variant: tip\n---\n";
+    "---\ntitle: Nixos DNF Modules\nsidebar:\n  order: 1\n  label: Overview\n---\n";
 
 /// Language of the generated pages. Starlight serves every page under
 /// `/<lang>/`, so root-absolute internal links must carry this prefix. The
@@ -179,14 +179,14 @@ pub fn generate_pages(project_root: &Path) -> Vec<Page> {
     let anchors = build_anchor_map(&collected);
 
     let mut pages = vec![Page {
-        rel_path: format!("{DOC_DIR}/modules.mdx"),
+        rel_path: format!("{DOC_DIR}/modules/index.mdx"),
         content: finalize(&render_index(&collected), &anchors),
     }];
 
     for (i, c) in collected.iter().enumerate() {
         pages.push(Page {
             rel_path: format!("{DOC_DIR}/modules/{}.mdx", c.category.slug),
-            content: finalize(&render_category_page(c, i + 1), &anchors),
+            content: finalize(&render_category_page(c, i + 2), &anchors),
         });
     }
     pages
@@ -577,7 +577,7 @@ mod tests {
         .unwrap();
 
         let pages = generate_pages(dir.path());
-        let index = &page(&pages, "doc/src/content/docs/en/ref/modules.mdx").content;
+        let index = &page(&pages, "doc/src/content/docs/en/ref/modules/index.mdx").content;
         // Index has the import, a card and a localized link to the category page.
         assert!(index.contains("import { CardGrid, LinkCard }"));
         assert!(index.contains("<LinkCard"));
