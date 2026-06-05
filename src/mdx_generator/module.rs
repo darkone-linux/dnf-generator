@@ -60,6 +60,7 @@ fn localize_links(content: &str) -> String {
 
 struct Category {
     title: &'static str,
+    short: &'static str,
     description: &'static str,
     /// Source directory (relative to project root) scanned for `.nix` modules.
     relative_dir: &'static str,
@@ -73,6 +74,7 @@ struct Category {
 const CATEGORIES: &[Category] = &[
     Category {
         title: "Mixin modules",
+        short: "Mixins",
         description: "**A mixin module** defines a collection of standard modules with a consistent common configuration.",
         relative_dir: "dnf/modules/mixin",
         prefix: "darkone.",
@@ -81,6 +83,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "Service modules",
+        short: "Services",
         description: "**A service module** provides a ready-to-use service (daemon).",
         relative_dir: "dnf/modules/service",
         prefix: "darkone.service.",
@@ -89,6 +92,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "System modules",
+        short: "System",
         description: "**A system module** manages common, important, and general configurations.",
         relative_dir: "dnf/modules/system",
         prefix: "darkone.system.",
@@ -97,6 +101,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "Security modules",
+        short: "Security",
         description: "**A security module** hardens the system, its programs and functionalities.",
         relative_dir: "dnf/modules/security",
         prefix: "darkone.security.",
@@ -105,6 +110,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "CLI applications",
+        short: "CLI Apps",
         description: "**A CLI application module** installs terminal applications and their configuration optimized for DNF.",
         relative_dir: "dnf/modules/console",
         prefix: "darkone.console.",
@@ -113,6 +119,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "GUI applications",
+        short: "GUI Apps",
         description: "**A GUI application module** installs graphical applications and their configuration optimized for DNF.",
         relative_dir: "dnf/modules/graphic",
         prefix: "darkone.graphic.",
@@ -121,6 +128,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "Administration modules",
+        short: "Administration",
         description: "**A administration module** deals with system-specific functionalities for administrators.",
         relative_dir: "dnf/modules/admin",
         prefix: "darkone.admin.",
@@ -128,8 +136,9 @@ const CATEGORIES: &[Category] = &[
         icon: "&#x1F451;",
     },
     Category {
-        title: "User mgm modules",
-        description: "**A user module** manage user-related processing or special user settings.",
+        title: "Users management modules",
+        short: "Users Management",
+        description: "**A users management module** manage user-related processing or special user settings.",
         relative_dir: "dnf/modules/user",
         prefix: "darkone.user.",
         slug: "user",
@@ -137,6 +146,7 @@ const CATEGORIES: &[Category] = &[
     },
     Category {
         title: "Home Manager modules",
+        short: "Home Manager",
         description: "**A home manager module** works with [home manager](https://github.com/nix-community/home-manager) profiles.",
         relative_dir: "dnf/home/modules",
         prefix: "darkone.home.",
@@ -228,8 +238,9 @@ fn render_index(collected: &[CollectedCategory]) -> String {
 fn render_category_page(c: &CollectedCategory, order: usize) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "---\ntitle: {}\nsidebar:\n  order: {order}\n---\n\n",
-        c.category.title
+        "---\ntitle: {}\nsidebar:\n  order: {order}\n  label: {}\n---\n\n",
+        c.category.title,
+        c.category.short
     ));
     out.push_str(&format!(":::note\n{}\n:::\n\n", c.category.description));
     for entry in &c.entries {
