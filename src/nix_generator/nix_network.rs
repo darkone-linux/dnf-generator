@@ -77,6 +77,18 @@ impl NixNetwork {
         zone: &str,
         services: &IndexMap<String, ServiceParams>,
     ) -> Result<()> {
+        // Same-host dependencies (modules.nix `require`): a service may not be
+        // enabled on a node unless every service it lists is enabled there too.
+        for service_name in services.keys() {
+            for req in self.registry.requires(service_name) {
+                if !services.contains_key(req.as_str()) {
+                    return Err(NixError::validation(format!(
+                        "Service '{service_name}' on '{hostname}' requires '{req}' enabled on the same host"
+                    )));
+                }
+            }
+        }
+
         for (service_name, params) in services {
             let mut is_global = params.global;
             let service_domain = params.domain.as_deref().unwrap_or(service_name);
@@ -273,6 +285,31 @@ mod tests {
         let s2: IndexMap<_, _> = [make_service("auth", true)].into_iter().collect();
         net.register_services("srv1", "lab", &s1).unwrap();
         assert!(net.register_services("srv2", "prod", &s2).is_err());
+    }
+
+    #[test]
+    fn register_require_missing_dependency_fails() {
+        let mut net = NixNetwork::default();
+        net.registry =
+            ServiceRegistry::from_nix(r#"{ monitoring = { require = [ "prometheus" ]; }; }"#)
+                .unwrap();
+        let s: IndexMap<_, _> = [make_service("monitoring", false)].into_iter().collect();
+        assert!(net.register_services("box", "lab", &s).is_err());
+    }
+
+    #[test]
+    fn register_require_satisfied_same_host_ok() {
+        let mut net = NixNetwork::default();
+        net.registry =
+            ServiceRegistry::from_nix(r#"{ monitoring = { require = [ "prometheus" ]; }; }"#)
+                .unwrap();
+        let s: IndexMap<_, _> = [
+            make_service("monitoring", false),
+            make_service("prometheus", false),
+        ]
+        .into_iter()
+        .collect();
+        assert!(net.register_services("box", "lab", &s).is_ok());
     }
 
     #[test]

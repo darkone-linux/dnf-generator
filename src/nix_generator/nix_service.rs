@@ -1,9 +1,25 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rnix::ast::{Attr, Expr, HasEntry};
+use rnix::ast::{Attr, Expr, HasEntry, InterpolPart};
 
 use crate::error::{NixError, Result};
+
+/// Plain string literal behind an `Expr` (no interpolation expected in
+/// modules.nix). Returns `None` for interpolated or non-string expressions.
+fn expr_str_literal(expr: &Expr) -> Option<String> {
+    let Expr::Str(s) = expr else {
+        return None;
+    };
+    let mut out = String::new();
+    for part in s.normalized_parts() {
+        match part {
+            InterpolPart::Literal(text) => out.push_str(&text),
+            InterpolPart::Interpolation(_) => return None,
+        }
+    }
+    Some(out)
+}
 
 /// Topology flags for a single service, read from `dnf/config/modules.nix`.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +49,10 @@ impl Default for ServiceFlags {
 #[derive(Debug, Default, Clone)]
 pub struct ServiceRegistry {
     map: HashMap<String, ServiceFlags>,
+
+    /// Same-host dependencies declared via `require = [ ... ]`: a service may
+    /// not be enabled on a node unless every listed service is too.
+    requires: HashMap<String, Vec<String>>,
 }
 
 impl ServiceRegistry {
@@ -46,6 +66,7 @@ impl ServiceRegistry {
         };
 
         let mut map = HashMap::new();
+        let mut requires: HashMap<String, Vec<String>> = HashMap::new();
 
         for av in root_set.attrpath_values() {
             let (Some(attrpath), Some(Expr::AttrSet(svc_set))) = (av.attrpath(), av.value())
@@ -67,6 +88,7 @@ impl ServiceRegistry {
             }
 
             let mut flags = ServiceFlags::default();
+            let mut reqs: Vec<String> = Vec::new();
 
             for svc_av in svc_set.attrpath_values() {
                 let (Some(key_path), Some(val)) = (svc_av.attrpath(), svc_av.value()) else {
@@ -80,6 +102,14 @@ impl ServiceRegistry {
                         _ => None,
                     })
                     .unwrap_or_default();
+
+                // `require = [ "svc" ... ]`: same-host service dependencies.
+                if key == "require" {
+                    if let Expr::List(list) = &val {
+                        reqs.extend(list.items().filter_map(|item| expr_str_literal(&item)));
+                    }
+                    continue;
+                }
 
                 let bool_val = if let Expr::Ident(i) = &val {
                     i.ident_token().map(|t| t.text() == "true").unwrap_or(false)
@@ -95,10 +125,13 @@ impl ServiceRegistry {
                 }
             }
 
+            if !reqs.is_empty() {
+                requires.insert(name.clone(), reqs);
+            }
             map.insert(name, flags);
         }
 
-        Ok(Self { map })
+        Ok(Self { map, requires })
     }
 
     /// Load from `modules.nix`. Missing file → empty registry (all defaults).
@@ -113,6 +146,11 @@ impl ServiceRegistry {
     /// Flags for `name`, or defaults if the service is unknown.
     pub fn flags(&self, name: &str) -> ServiceFlags {
         self.map.get(name).copied().unwrap_or_default()
+    }
+
+    /// Services that `name` requires on the same host (empty if none).
+    pub fn requires(&self, name: &str) -> &[String] {
+        self.requires.get(name).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -208,6 +246,25 @@ mod tests {
         assert!(!reg.flags("nextcloud").unique_per_zone);
         assert!(reg.flags("turn").external_access);
         assert!(reg.flags("turn").reverse_proxy); // default = true
+    }
+
+    #[test]
+    fn registry_parses_require_list() {
+        let nix = r#"{
+          monitoring = { require = [ "prometheus" ]; };
+          prometheus = {};
+          grafana = { reverseProxy = false; require = [ "prometheus" "postfix" ]; };
+        }"#;
+        let reg = ServiceRegistry::from_nix(nix).unwrap();
+
+        let mon: Vec<&str> = reg.requires("monitoring").iter().map(String::as_str).collect();
+        assert_eq!(mon, ["prometheus"]);
+
+        let graf: Vec<&str> = reg.requires("grafana").iter().map(String::as_str).collect();
+        assert_eq!(graf, ["prometheus", "postfix"]);
+
+        assert!(reg.requires("prometheus").is_empty());
+        assert!(reg.requires("unknown").is_empty());
     }
 
     #[test]
