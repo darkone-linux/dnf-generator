@@ -1,8 +1,9 @@
 //! Top-level loader: turns the merged YAML config into a fully-populated
 //! [`Configuration`] (users, hosts, zones, services, DNS records).
 //!
-//! The structure mirrors the original PHP `Configuration` class:
-//! 1. parse + deep-merge `etc/config.yaml` and `var/generated/config.yaml`
+//! Loading proceeds in order:
+//! 1. parse + deep-merge `etc/config.yaml` and `var/generated/config.yaml`,
+//!    then validate the result against the strict [`schema`](crate::nix_generator::schema)
 //! 2. load network defaults
 //! 3. load zones (and their `extraHosts`)
 //! 4. load users (regular + special `nix` maintenance user)
@@ -14,7 +15,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use indexmap::IndexMap;
-use serde_yaml::{Mapping, Value};
 
 use crate::error::{NixError, Result};
 use crate::nix_generator::item::host::{Host, ServiceParams};
@@ -22,7 +22,10 @@ use crate::nix_generator::item::user::{filter_profile, User, UserBuildConfig};
 use crate::nix_generator::nix_network::NixNetwork;
 use crate::nix_generator::nix_service::ServiceRegistry;
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
-use crate::nix_generator::yaml::{as_str_opt, as_string_vec, deep_merge, to_string_map};
+use crate::nix_generator::schema::{
+    ConfigFile, ExtraHost, HostEntry, Mac, NetworkCfg, ServiceCfg, UserCfg, ZoneCfg,
+};
+use crate::nix_generator::yaml::deep_merge;
 
 const MAX_RANGE_BOUND: i64 = 1000;
 const DEFAULT_PROFILE: &str = "minimal";
@@ -30,9 +33,6 @@ const NIX_USER_NAME: &str = "nix";
 const NIX_USER_UID: u32 = 65000;
 const NIX_USER_DISPLAY: &str = "Nix Maintenance User";
 const NIX_USER_PROFILE: &str = "nix-admin";
-
-/// Keys propagated from a list/range group declaration onto each generated host.
-const GROUP_INHERITED_KEYS: &[&str] = &["profile", "users", "groups", "features", "tags", "disko"];
 
 pub struct Configuration {
     pub users: IndexMap<String, User>,
@@ -62,6 +62,11 @@ impl Configuration {
             serde_yaml::from_str(&gen_str)?,
         );
 
+        // Strict schema gate: reject unknown keys / type mismatches up-front,
+        // reporting the exact path of any violation.
+        let schema: ConfigFile = serde_path_to_error::deserialize(merged.clone())
+            .map_err(|e| NixError::validation(format!("config.yaml: {} (at {})", e.inner(), e.path())))?;
+
         let project_root = main_yaml
             .parent()
             .and_then(|p| p.parent())
@@ -77,54 +82,48 @@ impl Configuration {
         // Topology flags consumed by `register_services` and DNS computation.
         cfg.network.registry = registry;
 
-        cfg.load_network(&merged)?;
-        cfg.load_zones(&merged)?;
-        cfg.load_users(&merged, project_root)?;
-        cfg.load_hosts(&merged, project_root)?;
+        cfg.load_network(schema.network.as_ref())?;
+        cfg.load_zones(schema.zones.as_ref())?;
+        cfg.load_users(&schema.users, project_root)?;
+        cfg.load_hosts(&schema.hosts, project_root)?;
 
         Ok(cfg)
     }
 
     // ─── network ────────────────────────────────────────────────────────────
 
-    fn load_network(&mut self, config: &Value) -> Result<()> {
-        let network_raw = config.get("network").cloned().unwrap_or(Value::Null);
-        self.network.register_network_config(network_raw)
+    fn load_network(&mut self, network: Option<&NetworkCfg>) -> Result<()> {
+        self.network.register_network_config(network)
     }
 
     // ─── zones ──────────────────────────────────────────────────────────────
 
-    fn load_zones(&mut self, config: &Value) -> Result<()> {
+    fn load_zones(&mut self, zones: Option<&IndexMap<String, ZoneCfg>>) -> Result<()> {
         // Always declare the external "www" zone so service generation can
         // reference it even when the YAML doesn't list it.
         let mut www = NixZone::new(EXTERNAL_ZONE_KEY);
         www.register_zone_config(
-            HashMap::new(),
+            None,
             &self.network.config.default_locale,
             &self.network.config.default_timezone,
             &self.network.config.domain,
         )?;
         self.network.add_zone(www);
 
-        let Some(zones) = config.get("zones").and_then(Value::as_mapping) else {
+        let Some(zones) = zones else {
             return Ok(());
         };
 
-        // PHP `Configuration::loadZones` discards the common-merge result (it
-        // mutates a copy then passes the original to `registerZoneConfig`).
-        // We mirror that quirk: `zones.common` is silently ignored here.
-        for (zone_name_val, zone_cfg) in zones {
-            let zone_name = zone_name_val.as_str().unwrap_or_default();
+        // `zones.common` carries cross-zone defaults but is not itself a zone;
+        // it is skipped here.
+        for (zone_name, zone_cfg) in zones {
             if zone_name == "common" {
                 continue;
             }
-            let cfg_map = to_string_map(zone_cfg.clone());
-            // Capture extraHosts before register_zone_config strips it from cfg.
-            let extra_hosts = cfg_map.get("extraHosts").cloned();
 
-            let mut zone = NixZone::new(zone_name);
+            let mut zone = NixZone::new(zone_name.as_str());
             zone.register_zone_config(
-                cfg_map,
+                Some(zone_cfg),
                 &self.network.config.default_locale,
                 &self.network.config.default_timezone,
                 &self.network.config.domain,
@@ -132,40 +131,31 @@ impl Configuration {
             let ip_prefix = zone.ip_prefix().to_string();
             self.network.add_zone(zone);
 
-            if let Some(eh) = extra_hosts {
-                self.process_extra_hosts(zone_name, &ip_prefix, &eh)?;
+            if let Some(extra_hosts) = &zone_cfg.extra_hosts {
+                self.process_extra_hosts(zone_name, &ip_prefix, extra_hosts)?;
             }
         }
 
         Ok(())
     }
 
-    /// Mirrors PHP `NixZone::registerZoneConfig` — declares each `extraHosts`
-    /// entry as a synthetic host on its zone (DHCP, aliases, services, DNS).
+    /// Declare each `extraHosts` entry as a synthetic host on its zone (DHCP,
+    /// aliases, services, DNS).
     fn process_extra_hosts(
         &mut self,
         zone_name: &str,
         ip_prefix: &str,
-        extra_hosts: &Value,
+        extra_hosts: &IndexMap<String, ExtraHost>,
     ) -> Result<()> {
-        let Some(map) = extra_hosts.as_mapping() else {
-            return Ok(());
-        };
-        for (hostname_val, host_cfg) in map {
-            let Some(hostname) = hostname_val.as_str() else {
-                continue;
-            };
-            let ip_suffix = as_str_opt(host_cfg, "ip").ok_or_else(|| {
-                NixError::validation(format!("extraHosts \"{hostname}\" requires an ip"))
-            })?;
-            let host_ip = format!("{ip_prefix}.{ip_suffix}");
-            let aliases = as_string_vec(host_cfg, "aliases");
-            let services = parse_services(host_cfg, hostname)?;
+        for (hostname, host_cfg) in extra_hosts {
+            let host_ip = format!("{ip_prefix}.{}", host_cfg.ip);
+            let aliases = host_cfg.aliases.clone().unwrap_or_default();
+            let services = parse_services(host_cfg.services.as_ref(), hostname)?;
 
             {
                 let zone = self.network.get_zone_mut(zone_name)?;
                 zone.register_host(hostname, Some(&host_ip), false)?;
-                if let Some(mac) = as_str_opt(host_cfg, "mac") {
+                if let Some(mac) = host_cfg.mac.as_deref() {
                     zone.register_mac_addresses(mac, &host_ip)?;
                 }
                 if !aliases.is_empty() {
@@ -183,40 +173,33 @@ impl Configuration {
 
     // ─── users ──────────────────────────────────────────────────────────────
 
-    fn load_users(&mut self, config: &Value, project_root: &Path) -> Result<()> {
-        let users = config
-            .get("users")
-            .and_then(Value::as_mapping)
-            .ok_or_else(|| NixError::validation("Users not found in configuration"))?;
-
+    fn load_users(
+        &mut self,
+        users: &IndexMap<String, UserCfg>,
+        project_root: &Path,
+    ) -> Result<()> {
         // Pre-reserve the special nix UID so a regular user can't steal it.
         let mut uid_tracker: HashMap<u32, String> = HashMap::new();
         uid_tracker.insert(NIX_USER_UID, NIX_USER_NAME.to_string());
 
-        for (login_val, user_cfg) in users {
-            let login = login_val.as_str().unwrap_or_default();
-            let uid = user_cfg.get("uid").and_then(Value::as_u64).ok_or_else(|| {
-                NixError::validation(format!("A valid uid is required for {login}"))
-            })? as u32;
-            let name = as_str_opt(user_cfg, "name").ok_or_else(|| {
-                NixError::validation(format!("A valid user name is required for {login}"))
-            })?;
+        for (login, user_cfg) in users {
             let user = User::build(UserBuildConfig {
                 login,
-                uid,
-                name,
-                email: as_str_opt(user_cfg, "email"),
-                profile: as_str_opt(user_cfg, "profile").unwrap_or(DEFAULT_PROFILE),
-                groups: as_string_vec(user_cfg, "groups"),
+                uid: user_cfg.uid,
+                name: &user_cfg.name,
+                email: user_cfg.email.as_deref(),
+                profile: user_cfg.profile.as_deref().unwrap_or(DEFAULT_PROFILE),
+                groups: user_cfg.groups.clone(),
+                disabled: user_cfg.disabled,
                 uid_tracker: &mut uid_tracker,
                 project_root,
             })?;
-            self.users.insert(login.to_string(), user);
+            self.users.insert(login.clone(), user);
         }
 
-        // Append the special nix maintenance user LAST (matches PHP order).
-        // The profile lookup may legitimately fail in test fixtures; in that
-        // case fall back to a hard-coded path.
+        // Append the special nix maintenance user LAST. The profile lookup may
+        // legitimately fail in test fixtures; in that case fall back to a
+        // hard-coded path.
         let nix_user = User {
             login: NIX_USER_NAME.to_string(),
             uid: NIX_USER_UID,
@@ -225,6 +208,7 @@ impl Configuration {
             profile: filter_profile(NIX_USER_PROFILE, project_root)
                 .unwrap_or_else(|_| format!("dnf/home/profiles/{NIX_USER_PROFILE}")),
             groups: vec![],
+            disabled: false,
         };
         self.users.insert(NIX_USER_NAME.to_string(), nix_user);
 
@@ -234,156 +218,104 @@ impl Configuration {
     // ─── hosts ──────────────────────────────────────────────────────────────
 
     /// Hosts come in three flavours, dispatched by which key is present:
-    /// - `range:` → `load_range_hosts` (e.g. workstations 1..N)
-    /// - `hosts:` → `load_list_hosts` (e.g. `kids` and `parents` laptops)
-    /// - otherwise → `load_static_hosts` (a single declared host)
-    fn load_hosts(&mut self, config: &Value, project_root: &Path) -> Result<()> {
-        let Some(hosts_list) = config.get("hosts").and_then(Value::as_sequence) else {
-            return Ok(());
-        };
-
-        let mut static_hosts = vec![];
-        let mut range_hosts = vec![];
-        let mut list_hosts = vec![];
-        for host in hosts_list {
-            if host.get("range").is_some() {
-                range_hosts.push(host.clone());
-            } else if host.get("hosts").is_some() {
-                list_hosts.push(host.clone());
+    /// - `range:` → a group templated over an integer range (e.g. `fd-01`..`fd-02`)
+    /// - `hosts:` → a group templated over a list of named sub-hosts
+    /// - otherwise → a single static host
+    fn load_hosts(&mut self, hosts: &[HostEntry], project_root: &Path) -> Result<()> {
+        // Expand range/list groups into concrete hosts, preserving the original
+        // ordering: plain static hosts first, then range-generated, then
+        // list-generated.
+        let mut static_hosts: Vec<HostEntry> = vec![];
+        let mut range_hosts: Vec<HostEntry> = vec![];
+        let mut list_hosts: Vec<HostEntry> = vec![];
+        for host in hosts {
+            if let Some(range) = &host.range {
+                let (start, end) = parse_range(range)?;
+                for i in start..=end {
+                    range_hosts.push(build_range_entry(host, i)?);
+                }
+            } else if let Some(sub_hosts) = &host.hosts {
+                for (hostname, host_cfg) in sub_hosts {
+                    let host_name = host_cfg.name.as_deref().ok_or_else(|| {
+                        NixError::validation(format!("Bad host description for {hostname}"))
+                    })?;
+                    list_hosts.push(build_list_entry(host, host_cfg, hostname, host_name));
+                }
             } else {
                 static_hosts.push(host.clone());
             }
         }
 
-        self.load_static_hosts(&static_hosts, project_root)?;
-        self.load_range_hosts(&range_hosts, project_root)?;
-        self.load_list_hosts(&list_hosts, project_root)?;
+        for host in static_hosts.iter().chain(&range_hosts).chain(&list_hosts) {
+            self.load_static_host(host, project_root)?;
+        }
         self.populate_zones()?;
 
         Ok(())
     }
 
-    fn load_static_hosts(&mut self, hosts: &[Value], project_root: &Path) -> Result<()> {
-        for host_val in hosts {
-            let hostname = as_str_opt(host_val, "hostname")
-                .ok_or_else(|| NixError::validation("A hostname is required"))?;
-            let name = as_str_opt(host_val, "name").ok_or_else(|| {
-                NixError::validation(format!("A name is required for \"{hostname}\""))
-            })?;
-            let profile = as_str_opt(host_val, "profile").ok_or_else(|| {
-                NixError::validation(format!("A host profile is required for \"{hostname}\""))
-            })?;
+    fn load_static_host(&mut self, host_val: &HostEntry, project_root: &Path) -> Result<()> {
+        let hostname = host_val
+            .hostname
+            .as_deref()
+            .ok_or_else(|| NixError::validation("A hostname is required"))?;
+        let name = host_val.name.as_deref().ok_or_else(|| {
+            NixError::validation(format!("A name is required for \"{hostname}\""))
+        })?;
+        let profile = host_val.profile.as_deref().ok_or_else(|| {
+            NixError::validation(format!("A host profile is required for \"{hostname}\""))
+        })?;
 
-            let (zone_name, ip) = self.extract_zone_and_ip(host_val, hostname)?;
-            let zone_domain = if zone_name == EXTERNAL_ZONE_KEY {
-                self.network.config.domain.clone()
-            } else {
-                self.network.get_zone(&zone_name)?.domain().to_string()
-            };
+        let (zone_name, ip) = self.extract_zone_and_ip(host_val, hostname)?;
+        let zone_domain = if zone_name == EXTERNAL_ZONE_KEY {
+            self.network.config.domain.clone()
+        } else {
+            self.network.get_zone(&zone_name)?.domain().to_string()
+        };
 
-            let groups = as_string_vec(host_val, "groups");
-            let users = self.expand_users(&as_string_vec(host_val, "users"), &groups);
-            let services = parse_services(host_val, hostname)?;
-            let aliases = as_string_vec(host_val, "aliases");
+        let groups = host_val.groups.clone().unwrap_or_default();
+        let users = self.expand_users(&host_val.users.clone().unwrap_or_default(), &groups);
+        let services = parse_services(host_val.services.as_ref(), hostname)?;
+        let aliases = host_val.aliases.clone().unwrap_or_default();
 
-            // Build the Host struct itself.
-            let mut host = Host::new(hostname);
-            host.name = name.to_string();
-            host.zone = zone_name.clone();
-            host.profile = profile.to_string();
-            host.arch = as_str_opt(host_val, "arch").map(str::to_string);
-            host.zone_domain = zone_domain.clone();
-            host.network_domain = self.network.config.domain.clone();
-            host.groups = groups;
-            host.set_users(users)?;
-            host.set_features(&as_string_vec(host_val, "features"));
-            host.tags = as_string_vec(host_val, "tags");
-            host.ip = ip.clone();
-            host.vpn_ip = host_val
-                .get("ipv4")
-                .and_then(|v| v.get("internal"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            host.services = services;
-            host.set_disko(
-                disko_profile(host_val),
-                disko_devices(host_val),
-                project_root,
-            )?;
+        // Build the Host struct itself.
+        let mut host = Host::new(hostname);
+        host.name = name.to_string();
+        host.zone = zone_name.clone();
+        host.profile = profile.to_string();
+        host.arch = host_val.arch.clone();
+        host.zone_domain = zone_domain.clone();
+        host.network_domain = self.network.config.domain.clone();
+        host.groups = groups;
+        host.set_users(users)?;
+        host.set_features(&host_val.features.clone().unwrap_or_default());
+        host.tags = host_val.tags.clone().unwrap_or_default();
+        host.ip = ip.clone();
+        host.vpn_ip = host_val.ipv4.as_ref().and_then(|v| v.internal.clone());
+        host.services = services;
+        host.set_disko(disko_profile(host_val), disko_devices(host_val), project_root)?;
 
-            // Mirror the host into the zone (DHCP, aliases) and into the
-            // service registry, then publish a DNS record.
-            let zone = self.network.get_zone_mut(&zone_name)?;
-            zone.register_host(hostname, ip.as_deref(), false)?;
-            if let (Some(ip_str), Some(mac)) = (&ip, as_str_opt(host_val, "mac")) {
-                zone.register_mac_addresses(mac, ip_str)?;
-            }
-            if !aliases.is_empty() {
-                zone.register_aliases(hostname, &aliases)?;
-            }
-
-            self.network
-                .register_services(hostname, &zone_name, &host.services)?;
-
-            if let Some(ref ip_str) = ip {
-                self.register_host_record(hostname, &zone_domain, ip_str);
-            }
-
-            self.hosts.insert(hostname.to_string(), host);
+        // Mirror the host into the zone (DHCP, aliases) and into the service
+        // registry, then publish a DNS record.
+        let mac = mac_single(&host_val.mac);
+        let zone = self.network.get_zone_mut(&zone_name)?;
+        zone.register_host(hostname, ip.as_deref(), false)?;
+        if let (Some(ip_str), Some(mac)) = (&ip, mac.as_deref()) {
+            zone.register_mac_addresses(mac, ip_str)?;
+        }
+        if !aliases.is_empty() {
+            zone.register_aliases(hostname, &aliases)?;
         }
 
+        self.network
+            .register_services(hostname, &zone_name, &host.services)?;
+
+        if let Some(ref ip_str) = ip {
+            self.register_host_record(hostname, &zone_domain, ip_str);
+        }
+
+        self.hosts.insert(hostname.to_string(), host);
         Ok(())
-    }
-
-    /// Range groups generate N hosts whose names contain the index — typically
-    /// `ws01`..`ws10`. The shared group keys propagate to every generated host.
-    fn load_range_hosts(&mut self, range_hosts: &[Value], project_root: &Path) -> Result<()> {
-        let mut static_hosts = vec![];
-        for group in range_hosts {
-            let range = group
-                .get("range")
-                .and_then(Value::as_sequence)
-                .filter(|r| r.len() == 2)
-                .ok_or_else(|| NixError::validation("Bad range type"))?;
-            let start = range[0]
-                .as_i64()
-                .ok_or_else(|| NixError::validation("Bad range start"))?;
-            let end = range[1]
-                .as_i64()
-                .ok_or_else(|| NixError::validation("Bad range end"))?;
-            let count = end - start;
-            if !(0..=MAX_RANGE_BOUND).contains(&count) {
-                return Err(NixError::validation(format!(
-                    "Range [{start}, {end}] out of bound"
-                )));
-            }
-            for i in start..=end {
-                static_hosts.push(Value::Mapping(build_range_entry(group, i)?));
-            }
-        }
-        self.load_static_hosts(&static_hosts, project_root)
-    }
-
-    /// List groups generate one host per entry in `hosts:`, applying the
-    /// group's `hostname`/`name` template (PHP `sprintf("%s", $hostname)`).
-    fn load_list_hosts(&mut self, list_hosts: &[Value], project_root: &Path) -> Result<()> {
-        let mut static_hosts = vec![];
-        for group in list_hosts {
-            let hosts_map = group
-                .get("hosts")
-                .and_then(Value::as_mapping)
-                .ok_or_else(|| NixError::validation("Bad hosts list type"))?;
-            for (hostname_val, host_cfg) in hosts_map {
-                let hostname = hostname_val.as_str().unwrap_or_default();
-                let host_name = as_str_opt(host_cfg, "name").ok_or_else(|| {
-                    NixError::validation(format!("Bad host description for {hostname}"))
-                })?;
-                static_hosts.push(Value::Mapping(build_list_entry(
-                    group, host_cfg, hostname, host_name,
-                )));
-            }
-        }
-        self.load_static_hosts(&static_hosts, project_root)
     }
 
     /// Two cross-cutting steps after every host is loaded:
@@ -448,10 +380,10 @@ impl Configuration {
     /// (`"<name>:<ip-suffix>"`) or the explicit `ipv4.external` form.
     fn extract_zone_and_ip(
         &self,
-        host: &Value,
+        host: &HostEntry,
         hostname: &str,
     ) -> Result<(String, Option<String>)> {
-        if let Some(zone_field) = as_str_opt(host, "zone") {
+        if let Some(zone_field) = host.zone.as_deref() {
             let mut parts = zone_field.splitn(2, ':');
             let zone_name = parts.next().unwrap_or("").to_string();
             let ip_suffix = parts.next().unwrap_or("");
@@ -467,11 +399,7 @@ impl Configuration {
             };
             return Ok((zone_name, ip));
         }
-        if let Some(ext_ip) = host
-            .get("ipv4")
-            .and_then(|v| v.get("external"))
-            .and_then(Value::as_str)
-        {
+        if let Some(ext_ip) = host.ipv4.as_ref().and_then(|v| v.external.as_deref()) {
             return Ok((EXTERNAL_ZONE_KEY.to_string(), Some(ext_ip.to_string())));
         }
         Err(NixError::validation(format!(
@@ -505,137 +433,162 @@ impl Configuration {
 
 // ─── free helpers ───────────────────────────────────────────────────────────
 
-fn disko_profile(host_val: &Value) -> Option<&str> {
-    host_val
-        .get("disko")
-        .and_then(|d| d.get("profile"))
-        .and_then(Value::as_str)
+fn disko_profile(host_val: &HostEntry) -> Option<&str> {
+    host_val.disko.as_ref().and_then(|d| d.profile.as_deref())
 }
 
-fn disko_devices(host_val: &Value) -> HashMap<String, String> {
+fn disko_devices(host_val: &HostEntry) -> HashMap<String, String> {
     host_val
-        .get("disko")
-        .and_then(|d| d.get("devices"))
-        .and_then(Value::as_mapping)
+        .disko
+        .as_ref()
+        .and_then(|d| d.devices.as_ref())
         .map(|m| {
             m.iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Extract the `services:` mapping from a host YAML node.
-fn parse_services(host_val: &Value, hostname: &str) -> Result<IndexMap<String, ServiceParams>> {
+/// A static host's `mac:` is a single comma-separated string; the indexed form
+/// is only meaningful on a `range:` group (resolved in `build_range_entry`).
+fn mac_single(mac: &Option<Mac>) -> Option<String> {
+    match mac {
+        Some(Mac::Single(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Validate a `range: [from, to]` pair and return its bounds.
+fn parse_range(range: &[i64]) -> Result<(i64, i64)> {
+    if range.len() != 2 {
+        return Err(NixError::validation("Bad range type"));
+    }
+    let (start, end) = (range[0], range[1]);
+    let count = end - start;
+    if !(0..=MAX_RANGE_BOUND).contains(&count) {
+        return Err(NixError::validation(format!(
+            "Range [{start}, {end}] out of bound"
+        )));
+    }
+    Ok((start, end))
+}
+
+/// Convert a typed `services:` mapping into the internal `ServiceParams` map,
+/// rejecting duplicate service names.
+fn parse_services(
+    services: Option<&IndexMap<String, Option<ServiceCfg>>>,
+    hostname: &str,
+) -> Result<IndexMap<String, ServiceParams>> {
     let mut result = IndexMap::new();
-    let Some(services) = host_val.get("services").and_then(Value::as_mapping) else {
+    let Some(services) = services else {
         return Ok(result);
     };
-    for (name_val, params_val) in services {
-        let name = name_val.as_str().unwrap_or_default().to_string();
-        let params = params_val
-            .as_mapping()
-            .map(|m| ServiceParams {
-                title: m.get("title").and_then(Value::as_str).map(str::to_string),
-                description: m
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                domain: m.get("domain").and_then(Value::as_str).map(str::to_string),
-                icon: m.get("icon").and_then(Value::as_str).map(str::to_string),
-                global: m.get("global").and_then(Value::as_bool).unwrap_or(false),
+    for (name, cfg) in services {
+        let params = cfg
+            .as_ref()
+            .map(|c| ServiceParams {
+                title: c.title.clone(),
+                description: c.description.clone(),
+                domain: c.domain.clone(),
+                icon: c.icon.clone(),
+                global: c.global,
             })
             .unwrap_or_default();
-        if result.contains_key(&name) {
+        if result.contains_key(name) {
             return Err(NixError::validation(format!(
                 "Service {hostname}:{name} already registered"
             )));
         }
-        result.insert(name, params);
+        result.insert(name.clone(), params);
     }
     Ok(result)
 }
 
-/// Build the synthetic static-host entry for index `i` of a `range:` group.
-fn build_range_entry(group: &Value, i: i64) -> Result<Mapping> {
-    let hostname = as_str_opt(group, "hostname")
+/// Build the concrete host for index `i` of a `range:` group. The keys in
+/// [`GROUP_INHERITED_KEYS`] are propagated from the group; the per-index MAC
+/// address (if any) is resolved from the group's indexed `mac:` map.
+fn build_range_entry(group: &HostEntry, i: i64) -> Result<HostEntry> {
+    let hostname = group
+        .hostname
+        .as_deref()
         .map(|t| apply_template(t, i))
         .ok_or_else(|| NixError::validation("hostname template required in range"))?;
-    let name = as_str_opt(group, "name")
+    let name = group
+        .name
+        .as_deref()
         .map(|t| apply_template(t, i))
         .unwrap_or_else(|| hostname.clone());
-    let zone = as_str_opt(group, "zone")
+    let zone = group
+        .zone
+        .as_deref()
         .map(|t| apply_template(t, i))
         .ok_or_else(|| NixError::validation("zone required in range"))?;
 
-    let mut host_map = Mapping::new();
-    host_map.insert("hostname".into(), hostname.into());
-    host_map.insert("name".into(), name.into());
-    host_map.insert("zone".into(), zone.into());
-    for key in GROUP_INHERITED_KEYS {
-        if let Some(v) = group.get(*key) {
-            host_map.insert((*key).into(), v.clone());
-        }
-    }
-    // Per-index MAC addresses live under `mac.<i>` in YAML.
-    if let Some(mac_val) = group
-        .get("mac")
-        .and_then(Value::as_mapping)
-        .and_then(|m| m.get(Value::from(i)))
-    {
-        host_map.insert("mac".into(), mac_val.clone());
-    }
-    // Per-index field overrides under `hosts.<i>`. PHP semantics are
-    // `$hosts[$id] += $extraConfig` (array union): existing keys kept,
-    // only NEW keys merged in — hence `entry().or_insert()`.
-    if let Some(overrides) = group
-        .get("hosts")
-        .and_then(Value::as_mapping)
-        .and_then(|m| m.get(Value::from(i)))
-        .and_then(Value::as_mapping)
-    {
-        for (k, v) in overrides {
-            host_map.entry(k.clone()).or_insert(v.clone());
-        }
-    }
-    Ok(host_map)
+    let mac = match &group.mac {
+        Some(Mac::Indexed(map)) => map.get(&i).cloned().map(Mac::Single),
+        _ => None,
+    };
+
+    Ok(HostEntry {
+        hostname: Some(hostname),
+        name: Some(name),
+        zone: Some(zone),
+        mac,
+        // GROUP_INHERITED_KEYS
+        profile: group.profile.clone(),
+        users: group.users.clone(),
+        groups: group.groups.clone(),
+        features: group.features.clone(),
+        tags: group.tags.clone(),
+        disko: group.disko.clone(),
+        // Not inherited.
+        ipv4: None,
+        arch: None,
+        aliases: None,
+        services: None,
+        range: None,
+        hosts: None,
+    })
 }
 
-/// Build the synthetic static-host entry for one member of a `hosts:` list group.
-///
-/// PHP performs `array_merge($hostCfg, [hostname, name, profile, …])` — the
-/// second array wins, so the group-level keys override the per-host config.
-fn build_list_entry(group: &Value, host_cfg: &Value, hostname: &str, host_name: &str) -> Mapping {
-    // PHP uses `sprintf("%s", $hostname)` — substitute the literal `%s`
-    // placeholder, NOT Rust's `{}`.
-    let tpl_hostname = as_str_opt(group, "hostname")
+/// Build the concrete host for one member of a `hosts:` list group. The group's
+/// `hostname`/`name` templates (literal `%s` placeholder) and the inherited keys
+/// override the per-host config; everything else (`zone`, `mac`, …) comes from
+/// the per-host entry.
+fn build_list_entry(
+    group: &HostEntry,
+    host_cfg: &HostEntry,
+    hostname: &str,
+    host_name: &str,
+) -> HostEntry {
+    let tpl_hostname = group
+        .hostname
+        .as_deref()
         .map(|t| t.replace("%s", hostname))
         .unwrap_or_else(|| hostname.to_string());
-    let tpl_name = as_str_opt(group, "name")
+    let tpl_name = group
+        .name
+        .as_deref()
         .map(|t| t.replace("%s", host_name))
         .unwrap_or_else(|| host_name.to_string());
 
-    let mut merged = Mapping::new();
-    if let Some(m) = host_cfg.as_mapping() {
-        for (k, v) in m {
-            merged.insert(k.clone(), v.clone());
-        }
-    }
-    merged.insert("hostname".into(), tpl_hostname.into());
-    merged.insert("name".into(), tpl_name.into());
-    if let Some(v) = group.get("profile") {
-        merged.insert("profile".into(), v.clone());
-    }
-    // Force-default the list keys to `[]` so downstream `as_string_vec`
-    // returns empty rather than panicking on a type mismatch.
-    for key in &["users", "groups", "features", "tags", "disko"] {
-        let v = group.get(key).cloned().unwrap_or(Value::Sequence(vec![]));
-        merged.insert((*key).into(), v);
-    }
-    merged
+    let mut entry = host_cfg.clone();
+    entry.hostname = Some(tpl_hostname);
+    entry.name = Some(tpl_name);
+    // Group-level keys win over the per-host config.
+    entry.profile = group.profile.clone();
+    entry.users = group.users.clone();
+    entry.groups = group.groups.clone();
+    entry.features = group.features.clone();
+    entry.tags = group.tags.clone();
+    entry.disko = group.disko.clone();
+    entry.range = None;
+    entry.hosts = None;
+    entry
 }
 
-/// Apply a PHP-sprintf-style template substitution for range host names.
+/// Apply an sprintf-style template substitution for range host names.
 /// Supported: `%'<pad><width>s` (e.g. `%'02s` → zero-padded), `%d`, `%s`.
 fn apply_template(template: &str, value: i64) -> String {
     let s = value.to_string();

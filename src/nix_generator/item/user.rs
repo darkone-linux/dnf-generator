@@ -12,6 +12,7 @@ pub struct User {
     pub email: Option<String>,
     pub profile: String,
     pub groups: Vec<String>,
+    pub disabled: bool,
 }
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub struct UserBuildConfig<'a> {
     pub email: Option<&'a str>,
     pub profile: &'a str,
     pub groups: Vec<String>,
+    pub disabled: bool,
     pub uid_tracker: &'a mut std::collections::HashMap<u32, String>,
     pub project_root: &'a Path,
 }
@@ -35,6 +37,7 @@ impl User {
             email,
             profile,
             groups,
+            disabled,
             uid_tracker,
             project_root,
         } = config;
@@ -65,6 +68,7 @@ impl User {
             email: email.filter(|e| !e.is_empty()).map(str::to_string),
             profile,
             groups,
+            disabled,
         })
     }
 }
@@ -104,6 +108,7 @@ mod tests {
             email: None,
             profile: "minimal",
             groups: vec![],
+            disabled: false,
             uid_tracker: tracker,
             project_root: root,
         })
@@ -128,6 +133,7 @@ mod tests {
             email: None,
             profile: "minimal",
             groups: vec![],
+            disabled: false,
             uid_tracker: &mut tracker,
             project_root: dir.path(),
         });

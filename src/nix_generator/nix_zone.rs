@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use serde_yaml::Value;
+
 use crate::error::{NixError, Result};
+use crate::nix_generator::schema::{Gateway, ZoneCfg};
 use crate::nix_generator::validation::{assert_regex, assert_tailscale_ip, RE_MAC_ADDRESS};
 
 const DEFAULT_LAN_IP_PREFIX: &str = "10.1";
@@ -185,7 +188,7 @@ impl NixZone {
     }
 
     /// Insert `value` at `gateway.<path…>` inside `self.config`, creating any
-    /// intermediate mappings as needed. Mirrors PHP's nested-array assignment.
+    /// intermediate mappings as needed.
     fn set_gateway_field(&mut self, path: &[&str], value: serde_yaml::Value) {
         let gw = self
             .config
@@ -199,112 +202,133 @@ impl NixZone {
         }
     }
 
-    /// Validate and set zone config from YAML, applying defaults.
+    /// Validate the typed zone config and materialise the internal `config`
+    /// map that drives `network.nix` emission, applying defaults and the
+    /// computed keys (`lang`, `domain`, `networkIp`, `prefixLength`).
+    ///
+    /// `extraHosts` and `gateway.lan.dhcp-range` are intentionally *not* placed
+    /// in `config`: the former is expanded into synthetic hosts by the loader,
+    /// the latter is consumed here to compute `dhcp_range`.
     pub fn register_zone_config(
         &mut self,
-        mut cfg: HashMap<String, serde_yaml::Value>,
+        cfg: Option<&ZoneCfg>,
         default_locale: &str,
         default_timezone: &str,
         network_domain: &str,
     ) -> Result<()> {
-        cfg.entry("locale".to_string())
-            .or_insert_with(|| default_locale.into());
-        cfg.entry("timezone".to_string())
-            .or_insert_with(|| default_timezone.into());
-        cfg.entry("description".to_string())
-            .or_insert_with(|| format!("{} network zone", self.name).into());
+        let mut config: HashMap<String, Value> = HashMap::new();
 
-        let locale = cfg["locale"].as_str().unwrap_or("").to_string();
-        cfg.entry("lang".to_string())
-            .or_insert_with(|| locale[..2].into());
+        let locale = cfg
+            .and_then(|c| c.locale.as_deref())
+            .unwrap_or(default_locale)
+            .to_string();
+        let timezone = cfg
+            .and_then(|c| c.timezone.as_deref())
+            .unwrap_or(default_timezone)
+            .to_string();
+        let description = cfg
+            .and_then(|c| c.description.clone())
+            .unwrap_or_else(|| format!("{} network zone", self.name));
+
+        config.insert("lang".to_string(), locale[..2].into());
+        config.insert("locale".to_string(), locale.into());
+        config.insert("timezone".to_string(), timezone.into());
+        config.insert("description".to_string(), description.into());
 
         let domain = if self.is_external() {
             network_domain.to_string()
         } else {
             format!("{}.{network_domain}", self.name)
         };
-        cfg.insert("domain".to_string(), domain.into());
+        config.insert("domain".to_string(), domain.into());
 
         if !self.is_external() {
             let ip_prefix = cfg
-                .get("ipPrefix")
-                .and_then(|v| v.as_str())
+                .and_then(|c| c.ip_prefix.as_deref())
                 .unwrap_or(DEFAULT_LAN_IP_PREFIX)
                 .to_string();
-            cfg.entry("ipPrefix".to_string())
-                .or_insert_with(|| ip_prefix.clone().into());
-            cfg.insert("networkIp".to_string(), format!("{ip_prefix}.0.0").into());
-            cfg.insert(
+            config.insert("networkIp".to_string(), format!("{ip_prefix}.0.0").into());
+            config.insert(
                 "prefixLength".to_string(),
                 (LAN_PREFIX_LENGTH as i64).into(),
             );
 
-            // Validate gateway config if present
-            if cfg.contains_key("gateway") {
-                self.assert_gw_cfg(&cfg)?;
-            }
-
-            // DHCP range: use configured or default
             let default_range = format!("{ip_prefix}.3.200,{ip_prefix}.3.249,24h");
-            self.dhcp_range = cfg
-                .get("gateway")
-                .and_then(|g| g.get("lan"))
-                .and_then(|l| l.get("dhcp-range"))
-                .and_then(|r| r.as_sequence())
-                .map(|seq| {
-                    seq.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_else(|| vec![default_range]);
-        }
-
-        // Remove keys that are processed internally and must not appear in Nix output
-        cfg.remove("extraHosts");
-        // Remove dhcp-range from gateway.lan (used internally for DHCP range computation)
-        if let Some(serde_yaml::Value::Mapping(gw)) = cfg.get_mut("gateway") {
-            if let Some(serde_yaml::Value::Mapping(lan)) =
-                gw.get_mut(serde_yaml::Value::String("lan".to_string()))
-            {
-                lan.remove("dhcp-range");
+            if let Some(gw) = cfg.and_then(|c| c.gateway.as_ref()) {
+                assert_gw_cfg(gw)?;
+                self.dhcp_range = gw
+                    .lan
+                    .as_ref()
+                    .and_then(|l| l.dhcp_range.clone())
+                    .unwrap_or_else(|| vec![default_range]);
+                config.insert("gateway".to_string(), gateway_to_value(gw));
+            } else {
+                self.dhcp_range = vec![default_range];
             }
+
+            config.insert("ipPrefix".to_string(), ip_prefix.into());
         }
 
-        self.config = cfg;
-        Ok(())
-    }
-
-    fn assert_gw_cfg(&self, cfg: &HashMap<String, serde_yaml::Value>) -> Result<()> {
-        let gw = cfg.get("gateway").expect("gateway key checked above");
-        if gw
-            .get("wan")
-            .and_then(|w| w.get("interface"))
-            .and_then(|i| i.as_str())
-            .is_none()
-        {
-            return Err(NixError::validation("A WAN interface is required"));
-        }
-        let lan_ifaces = gw
-            .get("lan")
-            .and_then(|l| l.get("interfaces"))
-            .and_then(|i| i.as_sequence());
-        if lan_ifaces.is_none_or(|s| s.is_empty()) {
-            return Err(NixError::validation("Valid LAN interfaces are required"));
-        }
-        if let Some(vpn_ip) = gw
-            .get("vpn")
-            .and_then(|v| v.get("ipv4"))
-            .and_then(|i| i.as_str())
-        {
-            assert_tailscale_ip(vpn_ip)?;
-        }
+        self.config = config;
         Ok(())
     }
 }
 
+/// Validate a gateway block: a WAN interface and at least one LAN interface are
+/// mandatory; a VPN address, if given, must be in the tailnet range.
+fn assert_gw_cfg(gw: &Gateway) -> Result<()> {
+    if gw
+        .wan
+        .as_ref()
+        .and_then(|w| w.interface.as_deref())
+        .is_none()
+    {
+        return Err(NixError::validation("A WAN interface is required"));
+    }
+    let lan_ifaces = gw.lan.as_ref().and_then(|l| l.interfaces.as_ref());
+    if lan_ifaces.is_none_or(|s| s.is_empty()) {
+        return Err(NixError::validation("Valid LAN interfaces are required"));
+    }
+    if let Some(vpn_ip) = gw.vpn.as_ref().and_then(|v| v.ipv4.as_deref()) {
+        assert_tailscale_ip(vpn_ip)?;
+    }
+    Ok(())
+}
+
+/// Build the `gateway` attribute mapping emitted in `network.nix`, in
+/// `wan` → `lan` → `vpn` order. `dhcp-range` is deliberately excluded (it is
+/// consumed to compute the DHCP range, not emitted). The result stays a
+/// `Value::Mapping` so `set_gateway_*` can later inject the gateway hostname
+/// and resolved IPs.
+fn gateway_to_value(gw: &Gateway) -> Value {
+    let mut map = serde_yaml::Mapping::new();
+    if let Some(wan) = &gw.wan {
+        if let Some(interface) = &wan.interface {
+            let mut inner = serde_yaml::Mapping::new();
+            inner.insert("interface".into(), interface.clone().into());
+            map.insert("wan".into(), Value::Mapping(inner));
+        }
+    }
+    if let Some(lan) = &gw.lan {
+        if let Some(interfaces) = &lan.interfaces {
+            let mut inner = serde_yaml::Mapping::new();
+            let seq: Vec<Value> = interfaces.iter().map(|i| i.clone().into()).collect();
+            inner.insert("interfaces".into(), Value::Sequence(seq));
+            map.insert("lan".into(), Value::Mapping(inner));
+        }
+    }
+    if let Some(vpn) = &gw.vpn {
+        if let Some(ipv4) = &vpn.ipv4 {
+            let mut inner = serde_yaml::Mapping::new();
+            inner.insert("ipv4".into(), ipv4.clone().into());
+            map.insert("vpn".into(), Value::Mapping(inner));
+        }
+    }
+    Value::Mapping(map)
+}
+
 /// Walk `path` inside `root`, creating intermediate mappings, and insert `value`
-/// at the final key. Used by `set_gateway_*` to mirror PHP nested-assignment.
+/// at the final key. Used by `set_gateway_*` to nest gateway state.
 fn insert_nested(root: &mut serde_yaml::Mapping, path: &[&str], value: serde_yaml::Value) {
     let Some((last, prefix)) = path.split_last() else {
         return;
@@ -395,8 +419,7 @@ mod tests {
     #[test]
     fn dhcp_range_default() {
         let mut z = NixZone::new("lab");
-        let cfg: HashMap<String, serde_yaml::Value> = HashMap::new();
-        z.register_zone_config(cfg, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
             .unwrap();
         assert_eq!(z.dhcp_range, vec!["10.1.3.200,10.1.3.249,24h"]);
     }
@@ -404,8 +427,7 @@ mod tests {
     #[test]
     fn external_zone_no_dhcp() {
         let mut z = NixZone::new(EXTERNAL_ZONE_KEY);
-        let cfg: HashMap<String, serde_yaml::Value> = HashMap::new();
-        z.register_zone_config(cfg, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
             .unwrap();
         assert!(z.dhcp_range.is_empty());
         assert_eq!(z.domain(), "darkone.lan");
@@ -414,8 +436,7 @@ mod tests {
     #[test]
     fn local_zone_domain() {
         let mut z = NixZone::new("prod");
-        let cfg: HashMap<String, serde_yaml::Value> = HashMap::new();
-        z.register_zone_config(cfg, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
             .unwrap();
         assert_eq!(z.domain(), "prod.darkone.lan");
     }

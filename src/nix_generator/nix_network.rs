@@ -6,6 +6,7 @@ use crate::error::{NixError, Result};
 use crate::nix_generator::item::host::ServiceParams;
 use crate::nix_generator::nix_service::{NixService, ServiceRegistry};
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
+use crate::nix_generator::schema::{Coordination, Matrix, NetworkCfg, NetworkDefault, Smtp};
 use crate::nix_generator::validation::{
     assert_email, assert_regex, RE_FQDN, RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
 };
@@ -23,8 +24,12 @@ pub struct NetworkConfig {
     pub coordination_domain: String,
     pub coordination_hostname: String,
     pub coordination_enable: bool,
-    /// Full raw config for output
-    pub raw: serde_yaml::Value,
+    /// Typed blocks kept verbatim for `network.nix` emission (only the keys
+    /// actually present in the config are emitted).
+    pub default: Option<NetworkDefault>,
+    pub coordination: Option<Coordination>,
+    pub smtp: Option<Smtp>,
+    pub matrix: Option<Matrix>,
 }
 
 #[derive(Debug, Default)]
@@ -62,7 +67,7 @@ impl NixNetwork {
         &self.services
     }
 
-    /// Services in declaration order (matches PHP insertion order).
+    /// Services in declaration order.
     pub fn services_as_vec(&self) -> Vec<&NixService> {
         self.services.values().collect()
     }
@@ -139,74 +144,52 @@ impl NixNetwork {
         Ok(())
     }
 
-    /// Validate and store network configuration from YAML.
-    pub fn register_network_config(&mut self, raw: serde_yaml::Value) -> Result<()> {
+    /// Validate and store network configuration.
+    pub fn register_network_config(&mut self, cfg: Option<&NetworkCfg>) -> Result<()> {
+        let default = cfg.and_then(|c| c.default.as_ref());
+        let coord = cfg.and_then(|c| c.coordination.as_ref());
+        let smtp = cfg.and_then(|c| c.smtp.as_ref());
+
         // Apply defaults
-        let domain = raw
-            .get("domain")
-            .and_then(|v| v.as_str())
+        let domain = cfg
+            .and_then(|c| c.domain.as_deref())
             .unwrap_or(DEFAULT_DOMAIN)
             .to_string();
-
-        let locale = raw
-            .get("default")
-            .and_then(|d| d.get("locale"))
-            .and_then(|v| v.as_str())
+        let locale = default
+            .and_then(|d| d.locale.as_deref())
             .unwrap_or(DEFAULT_LOCALE)
             .to_string();
-
-        let timezone = raw
-            .get("default")
-            .and_then(|d| d.get("timezone"))
-            .and_then(|v| v.as_str())
+        let timezone = default
+            .and_then(|d| d.timezone.as_deref())
             .unwrap_or(DEFAULT_TIMEZONE)
             .to_string();
-
-        let coord_domain = raw
-            .get("coordination")
-            .and_then(|c| c.get("domain"))
-            .and_then(|v| v.as_str())
+        let coord_domain = coord
+            .and_then(|c| c.domain.as_deref())
             .unwrap_or(DEFAULT_COORDINATION_DOMAIN)
             .to_string();
-
-        let coord_hostname = raw
-            .get("coordination")
-            .and_then(|c| c.get("hostname"))
-            .and_then(|v| v.as_str())
+        let coord_hostname = coord
+            .and_then(|c| c.hostname.as_deref())
             .unwrap_or("")
             .to_string();
-
-        let coord_enable = raw
-            .get("coordination")
-            .and_then(|c| c.get("enable"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let coord_enable = coord.and_then(|c| c.enable).unwrap_or(false);
 
         // Validate
         assert_regex(RE_LOCALE, &locale, "Bad default network locale syntax")?;
-        assert_regex(
-            RE_TIMEZONE,
-            &timezone,
-            "Bad default network timezone syntax",
-        )?;
+        assert_regex(RE_TIMEZONE, &timezone, "Bad default network timezone syntax")?;
         if !coord_hostname.is_empty() {
-            assert_regex(
-                RE_HOSTNAME,
-                &coord_hostname,
-                "Bad coordination hostname type",
-            )?;
+            assert_regex(RE_HOSTNAME, &coord_hostname, "Bad coordination hostname type")?;
         }
         assert_regex(RE_HOSTNAME, &coord_domain, "Bad Headscale domain name")?;
 
         // SMTP validation
-        if let Some(smtp) = raw.get("smtp") {
-            if let Some(proto) = smtp.get("protocol").and_then(|v| v.as_str()) {
+        if let Some(smtp) = smtp {
+            if let Some(proto) = smtp.protocol.as_deref() {
                 assert_regex(RE_SMTP_PROTOCOL, proto, "Bad SMTP protocol")?;
             }
-            if let Some(server) = smtp.get("server").and_then(|v| v.as_str()) {
+            if let Some(server) = smtp.server.as_deref() {
                 assert_regex(RE_FQDN, server, "Bad SMTP Server")?;
             }
-            if let Some(user) = smtp.get("username").and_then(|v| v.as_str()) {
+            if let Some(user) = smtp.username.as_deref() {
                 assert_email(user, "Bad SMTP Email")?;
             }
         }
@@ -218,7 +201,10 @@ impl NixNetwork {
             coordination_domain: coord_domain,
             coordination_hostname: coord_hostname,
             coordination_enable: coord_enable,
-            raw: raw.clone(),
+            default: default.cloned(),
+            coordination: coord.cloned(),
+            smtp: smtp.cloned(),
+            matrix: cfg.and_then(|c| c.matrix.clone()),
         };
 
         Ok(())
@@ -233,16 +219,16 @@ mod tests {
     #[test]
     fn register_network_config_defaults() {
         let mut net = NixNetwork::default();
-        let raw = serde_yaml::from_str("domain: mynet.lan\ncoordination:\n  domain: headscale\n  hostname: hcs\n  enable: false\ndefault:\n  locale: fr_FR.UTF-8\n  timezone: Europe/Paris").unwrap();
-        assert!(net.register_network_config(raw).is_ok());
+        let cfg: NetworkCfg = serde_yaml::from_str("domain: mynet.lan\ncoordination:\n  domain: headscale\n  hostname: hcs\n  enable: false\ndefault:\n  locale: fr_FR.UTF-8\n  timezone: Europe/Paris").unwrap();
+        assert!(net.register_network_config(Some(&cfg)).is_ok());
         assert_eq!(net.config.domain, "mynet.lan");
     }
 
     #[test]
     fn register_network_config_invalid_locale() {
         let mut net = NixNetwork::default();
-        let raw = serde_yaml::from_str("domain: x.lan\ncoordination:\n  domain: hcs\n  hostname: h\n  enable: false\ndefault:\n  locale: bad\n  timezone: Europe/Paris").unwrap();
-        assert!(net.register_network_config(raw).is_err());
+        let cfg: NetworkCfg = serde_yaml::from_str("domain: x.lan\ncoordination:\n  domain: hcs\n  hostname: h\n  enable: false\ndefault:\n  locale: bad\n  timezone: Europe/Paris").unwrap();
+        assert!(net.register_network_config(Some(&cfg)).is_err());
     }
 
     fn make_service(name: &str, global: bool) -> (String, ServiceParams) {
