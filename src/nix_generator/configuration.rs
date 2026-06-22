@@ -283,7 +283,7 @@ impl Configuration {
         host.name = name.to_string();
         host.zone = zone_name.clone();
         host.profile = profile.to_string();
-        host.arch = host_val.arch.clone();
+        host.set_arch(host_val.arch.clone())?;
         host.zone_domain = zone_domain.clone();
         host.network_domain = self.network.config.domain.clone();
         host.groups = groups;

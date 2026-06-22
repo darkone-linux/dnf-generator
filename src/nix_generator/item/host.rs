@@ -4,7 +4,7 @@ use std::path::Path;
 use indexmap::IndexMap;
 
 use crate::error::{NixError, Result};
-use crate::nix_generator::validation::{assert_regex, RE_DEVICE, RE_IDENTIFIER, RE_LOGIN};
+use crate::nix_generator::validation::{assert_arch, assert_regex, RE_DEVICE, RE_IDENTIFIER, RE_LOGIN};
 
 #[derive(Debug, Default)]
 pub struct ServiceParams {
@@ -59,6 +59,15 @@ impl Host {
             services: IndexMap::new(),
             disko: DiskoConfig::default(),
         }
+    }
+
+    /// Validate the optional `arch` against the whitelist, then store it.
+    pub fn set_arch(&mut self, arch: Option<String>) -> Result<()> {
+        if let Some(value) = &arch {
+            assert_arch(value)?;
+        }
+        self.arch = arch;
+        Ok(())
     }
 
     pub fn set_users(&mut self, users: Vec<String>) -> Result<()> {

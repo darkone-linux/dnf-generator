@@ -18,6 +18,10 @@ pub const RE_TIMEZONE: &str = r"^([A-Za-z]+)/([A-Za-z0-9_-]+)(/([A-Za-z0-9_-]+))
 pub const RE_SMTP_PROTOCOL: &str = r"^(http|https|submission|submissions)$";
 pub const RE_IP_SUFFIX: &str = r"^([0-9]{1,3}\.)?[0-9]{1,3}$";
 
+// Host `arch` whitelist: compact `cpu[:board]` form consumed by the framework's
+// `parseArch` (dnf/lib/hive.nix). `x86_64-linux` is kept as a legacy alias.
+pub const ALLOWED_ARCH: &[&str] = &["x86_64", "x86_64-linux", "aarch64:rpi4", "aarch64:rpi5"];
+
 // Tailscale CGNAT range: 100.64.0.0/10
 const TAILSCALE_MIN: u32 = (100 << 24) | (64 << 16); // 100.64.0.1
 const TAILSCALE_MAX: u32 = (100 << 24) | (127 << 16) | (255 << 8) | 255; // 100.127.255.254
@@ -43,6 +47,16 @@ pub fn assert_email(value: &str, err: &str) -> Result<()> {
         return Err(NixError::validation(format!("Email \"{value}\": {err}")));
     }
     Ok(())
+}
+
+pub fn assert_arch(value: &str) -> Result<()> {
+    if ALLOWED_ARCH.contains(&value) {
+        return Ok(());
+    }
+    Err(NixError::validation(format!(
+        "arch \"{value}\" is not allowed (one of: {})",
+        ALLOWED_ARCH.join(", ")
+    )))
 }
 
 pub fn assert_tailscale_ip(ip: &str) -> Result<()> {
@@ -135,6 +149,20 @@ mod tests {
     #[test]
     fn invalid_email() {
         assert!(assert_email("not-an-email", "").is_err());
+    }
+
+    #[test]
+    fn valid_arch() {
+        assert!(assert_arch("x86_64").is_ok());
+        assert!(assert_arch("aarch64:rpi4").is_ok());
+        assert!(assert_arch("aarch64:rpi5").is_ok());
+    }
+
+    #[test]
+    fn invalid_arch() {
+        assert!(assert_arch("aarch64").is_err());
+        assert!(assert_arch("aarch64:foo").is_err());
+        assert!(assert_arch("riscv64").is_err());
     }
 
     #[test]
