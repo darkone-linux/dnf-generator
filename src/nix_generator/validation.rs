@@ -20,7 +20,14 @@ pub const RE_IP_SUFFIX: &str = r"^([0-9]{1,3}\.)?[0-9]{1,3}$";
 
 // Host `arch` whitelist: compact `cpu[:board]` form consumed by the framework's
 // `parseArch` (dnf/lib/hive.nix). `x86_64-linux` is kept as a legacy alias.
-pub const ALLOWED_ARCH: &[&str] = &["x86_64", "x86_64-linux", "aarch64:rpi4", "aarch64:rpi5"];
+pub const ALLOWED_ARCH: &[&str] = &[
+    "x86_64",
+    "x86_64-linux",
+    "aarch64:rpi02",
+    "aarch64:rpi3",
+    "aarch64:rpi4",
+    "aarch64:rpi5",
+];
 
 // Tailscale CGNAT range: 100.64.0.0/10
 const TAILSCALE_MIN: u32 = (100 << 24) | (64 << 16); // 100.64.0.1
@@ -154,6 +161,8 @@ mod tests {
     #[test]
     fn valid_arch() {
         assert!(assert_arch("x86_64").is_ok());
+        assert!(assert_arch("aarch64:rpi02").is_ok());
+        assert!(assert_arch("aarch64:rpi3").is_ok());
         assert!(assert_arch("aarch64:rpi4").is_ok());
         assert!(assert_arch("aarch64:rpi5").is_ok());
     }
