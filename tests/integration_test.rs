@@ -849,21 +849,36 @@ fn generate_network_local_zone_headscale_ip() {
 fn generate_network_www_tls_builder_hosts() {
     let (_dir, root) = setup_test_root();
     let output = make_generate(&root).generate_network_raw().unwrap();
-    // tls-builder-hosts: non-global local zone services
+    // tls-builder-hosts: non-global local zone services WITHOUT externalAccess
     assert!(
         output.contains("adguardhome.local.test.lan"),
         "adguardhome must be in tls-builder-hosts"
     );
     assert!(
-        output.contains("homepage.local.test.lan"),
-        "homepage must be in tls-builder-hosts"
-    );
-    assert!(
         output.contains("restic.local.test.lan"),
         "restic must be in tls-builder-hosts"
     );
+    // homepage has externalAccess → moved to external-hosts, NOT tls-builder-hosts
     // nextcloud is global → not in tls-builder-hosts
     // headscale is in www zone → not in tls-builder-hosts
+}
+
+#[test]
+fn generate_network_www_external_hosts() {
+    let (_dir, root) = setup_test_root();
+    let output = make_generate(&root).generate_network_raw().unwrap();
+    // homepage is a non-global local zone service flagged externalAccess:
+    // the HCS reverse-proxies its zone FQDN to the zone gateway VPN IP.
+    assert!(
+        output.contains(r#"fqdn = "homepage.local.test.lan""#),
+        "homepage must be in external-hosts\n\nActual:\n{output}"
+    );
+    assert!(
+        output.contains(r#"target = "100.64.0.50""#),
+        "external-hosts target must be the local zone gateway VPN IP\n\nActual:\n{output}"
+    );
+    // adguardhome/restic have no externalAccess → stay in tls-builder-hosts only.
+    // headscale is in www zone (not local) → never in external-hosts.
 }
 
 #[test]

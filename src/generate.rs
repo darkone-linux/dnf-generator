@@ -178,6 +178,7 @@ impl Generate {
                 "tls-builder-hosts",
                 Box::new(self.compute_tls_builder_hosts()),
             );
+            attrs.set("external-hosts", Box::new(self.compute_external_hosts()));
             let unbound_data = self.compute_unbound_local_data(zone);
             if !unbound_data.is_empty() {
                 let mut unbound = NixAttrSet::new();
@@ -347,17 +348,55 @@ impl Generate {
         entries
     }
 
-    /// `tls-builder-hosts`: every non-global LAN service exposed via TLS,
-    /// formatted as `<service-domain>.<zone-domain>`.
+    /// `tls-builder-hosts`: non-global LAN services whose TLS cert is built on
+    /// the HCS (public ACME) and synced to the gateway, formatted as
+    /// `<service-domain>.<zone-domain>`. The HCS serves a stub `respond` vhost
+    /// just to trigger cert issuance.
+    ///
+    /// `externalAccess` services are excluded: they get a real reverse-proxy
+    /// vhost on the HCS instead (see `compute_external_hosts`), which builds
+    /// the very same cert while also exposing the service.
     fn compute_tls_builder_hosts(&self) -> NixList {
         let mut list = NixList::new();
         for svc in self.config.network.services_as_vec() {
             if svc.zone == EXTERNAL_ZONE_KEY || svc.global {
                 continue;
             }
+            if self.config.network.registry.flags(&svc.name).external_access {
+                continue;
+            }
             if let Some(svc_zone) = self.config.network.zones.get(&svc.zone) {
                 list.add_string(format!("{}.{}", svc.domain_label(), svc_zone.domain()));
             }
+        }
+        list
+    }
+
+    /// `external-hosts`: non-global zone services flagged `externalAccess`.
+    /// The HCS terminates public TLS for each FQDN and reverse-proxies it to
+    /// the service's zone gateway over the tailnet; the gateway's own vhost
+    /// then handles SSO and the real backend. Each entry ships the target
+    /// gateway VPN IP so the Nix side needs no zone lookup:
+    /// `{ fqdn = "<svc>.<zone-domain>"; target = "<gateway-vpn-ipv4>"; }`.
+    fn compute_external_hosts(&self) -> NixList {
+        let mut list = NixList::new();
+        for svc in self.config.network.services_as_vec() {
+            if svc.zone == EXTERNAL_ZONE_KEY || svc.global {
+                continue;
+            }
+            if !self.config.network.registry.flags(&svc.name).external_access {
+                continue;
+            }
+            let Some(svc_zone) = self.config.network.zones.get(&svc.zone) else {
+                continue;
+            };
+            let Some(target) = svc_zone.gateway_vpn_ipv4() else {
+                continue;
+            };
+            let mut entry = NixAttrSet::new();
+            entry.set_string("fqdn", format!("{}.{}", svc.domain_label(), svc_zone.domain()));
+            entry.set_string("target", target);
+            list.add(Box::new(entry));
         }
         list
     }
