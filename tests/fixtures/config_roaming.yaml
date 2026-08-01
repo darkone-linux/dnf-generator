@@ -1,0 +1,66 @@
+# Two-zone test configuration: exercises the roaming reservations that every
+# zone holds for MAC-known hosts of the other zones.
+
+network:
+  domain: "test.lan"
+  default:
+    locale: "fr_FR.UTF-8"
+    timezone: "Europe/Paris"
+  coordination:
+    enable: false
+    hostname: "coord"
+    domain: "headscale"
+
+zones:
+  alpha:
+    description: "Alpha network"
+    ipPrefix: "10.7"
+    gateway:
+      wan:
+        interface: "eth0"
+      lan:
+        interfaces: ["eth1"]
+  beta:
+    description: "Beta network"
+    ipPrefix: "10.8"
+    gateway:
+      wan:
+        interface: "eth0"
+      lan:
+        interfaces: ["eth1"]
+
+users:
+  admin:
+    uid: 1000
+    name: "Admin User"
+    profile: "admin-profile"
+    groups: ["admins"]
+
+hosts:
+
+  # Alphabetically first MAC-known host -> roaming index 1
+  - hostname: "gw-alpha"
+    name: "Alpha Gateway"
+    zone: "alpha:1.1"
+    profile: "gateway-profile"
+    mac: "aa:aa:aa:aa:aa:a1"
+
+  # Roaming index 2
+  - hostname: "gw-beta"
+    name: "Beta Gateway"
+    zone: "beta:1.1"
+    profile: "gateway-profile"
+    mac: "bb:bb:bb:bb:bb:b1"
+
+  # Two interfaces on the LAN -> both MACs share the reservation. Index 3.
+  - hostname: "laptop"
+    name: "Roaming Laptop"
+    zone: "alpha:2.1"
+    profile: "desktop-profile"
+    mac: "cc:cc:cc:cc:cc:c1,cc:cc:cc:cc:cc:c2"
+
+  # No MAC declared -> no reservation anywhere
+  - hostname: "nomad"
+    name: "Unknown Machine"
+    zone: "beta:2.1"
+    profile: "desktop-profile"

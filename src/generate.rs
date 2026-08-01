@@ -190,6 +190,7 @@ impl Generate {
                 "extraDnsmasqSettings",
                 Box::new(self.compute_extra_dnsmasq(zone)),
             );
+            attrs.set("roaming", Box::new(build_roaming_attrs(zone)));
         }
 
         attrs
@@ -198,9 +199,10 @@ impl Generate {
     fn compute_extra_dnsmasq(&self, zone: &NixZone) -> NixAttrSet {
         let mut settings = NixAttrSet::new();
 
-        // dhcp-host: sorted MAC entries (stable diffs)
-        let mut dhcp_entries: Vec<&str> =
-            zone.mac_addresses().values().map(String::as_str).collect();
+        // dhcp-host: sorted MAC entries (stable diffs), native hosts first then
+        // the reservations held for hosts visiting from another zone.
+        let mut dhcp_entries: Vec<String> = zone.mac_addresses().values().cloned().collect();
+        dhcp_entries.extend(zone.roaming().values().map(|(mac, ip)| format!("{mac},{ip}")));
         dhcp_entries.sort();
         settings.set("dhcp-host", Box::new(NixList::from_strings(dhcp_entries)));
 
@@ -262,7 +264,8 @@ impl Generate {
     /// 3. aliases of the current zone,
     /// 4. aliases of the external (`www`) zone replicated using LOCAL IPs,
     /// 5. residual hosts from `zone.hosts()` not yet emitted (extraHosts etc.),
-    /// 6. final lexicographic sort.
+    /// 6. roaming hosts, under this zone's domain only,
+    /// 7. final lexicographic sort.
     fn compute_host_records(&self, zone: &NixZone) -> Vec<String> {
         let network_domain = &self.config.network.config.domain;
         let mut entries: Vec<String> = self.config.host_records.clone();
@@ -342,6 +345,13 @@ impl Generate {
         residual.sort_by(|a, b| a.0.cmp(b.0));
         for (host, ip) in residual {
             entries.push(format!("{host},{host}.{},{ip}", zone.domain()));
+        }
+
+        // Step 6 — roaming hosts. Fully-qualified under the visited zone only:
+        // the short name keeps pointing at the host's home address, so adding
+        // these records never shadows an existing one.
+        for (host, (_, ip)) in zone.roaming() {
+            entries.push(format!("{host}.{},{ip}", zone.domain()));
         }
 
         entries.sort();
@@ -474,6 +484,18 @@ impl Generate {
     fn generate_doc(&self) -> Result<String> {
         crate::mdx_generator::generator::generate(&self.project_root, false)
     }
+}
+
+/// `zone.roaming`: hostname -> address this zone reserves for that host while
+/// it is plugged here instead of at home. Consumed by the install tooling to
+/// target a machine outside its own zone; dnsmasq gets the same data through
+/// `dhcp-host` / `host-record`.
+fn build_roaming_attrs(zone: &NixZone) -> NixAttrSet {
+    let mut attrs = NixAttrSet::new();
+    for (host, (_, ip)) in zone.roaming() {
+        attrs.set_string(host, ip);
+    }
+    attrs
 }
 
 // ─── per-host hosts.nix builder ────────────────────────────────────────────

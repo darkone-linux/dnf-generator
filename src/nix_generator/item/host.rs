@@ -23,6 +23,9 @@ pub struct Host {
     pub profile: String,
     pub ip: Option<String>,
     pub vpn_ip: Option<String>,
+    /// Comma-separated MAC list of the LAN interfaces, when known. Not emitted
+    /// in `hosts.nix`: it drives the DHCP reservations built per zone.
+    pub mac: Option<String>,
     pub arch: Option<String>,
     pub zone_domain: String,
     pub network_domain: String,
@@ -49,6 +52,7 @@ impl Host {
             profile: String::new(),
             ip: None,
             vpn_ip: None,
+            mac: None,
             arch: None,
             zone_domain: String::new(),
             network_domain: String::new(),

@@ -9,7 +9,7 @@
 //! 4. load users (regular + special `nix` maintenance user)
 //! 5. load hosts in three flavours — static, range, list
 //! 6. propagate cross-cutting state (gateways, external hosts replicated in
-//!    every local zone)
+//!    every local zone, roaming reservations for MAC-known hosts)
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -21,13 +21,16 @@ use crate::nix_generator::item::host::{Host, ServiceParams};
 use crate::nix_generator::item::user::{filter_profile, User, UserBuildConfig};
 use crate::nix_generator::nix_network::NixNetwork;
 use crate::nix_generator::nix_service::ServiceRegistry;
-use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
+use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY, ROAMING_SUBNET};
 use crate::nix_generator::schema::{
     ConfigFile, ExtraHost, HostEntry, Mac, NetworkCfg, ServiceCfg, UserCfg, ZoneCfg,
 };
 use crate::nix_generator::yaml::deep_merge;
 
 const MAX_RANGE_BOUND: i64 = 1000;
+
+/// Usable hosts in the roaming /24 (`.1` … `.254`).
+const MAX_ROAMING_HOSTS: usize = 254;
 const DEFAULT_PROFILE: &str = "minimal";
 const NIX_USER_NAME: &str = "nix";
 const NIX_USER_UID: u32 = 65000;
@@ -250,6 +253,69 @@ impl Configuration {
             self.load_static_host(host, project_root)?;
         }
         self.populate_zones()?;
+        self.populate_roaming()?;
+
+        Ok(())
+    }
+
+    /// Reserve, in every zone but its own, a fixed address for each fleet host
+    /// whose MAC is known.
+    ///
+    /// A machine plugged outside its home zone then gets a predictable lease
+    /// and a name (`<host>.<visited-zone-domain>`) instead of a random address
+    /// from the dynamic range — which is what makes installing a gateway from
+    /// another zone, or servicing a roaming laptop, deterministic.
+    ///
+    /// The index is fleet-wide and sorted by hostname, so a host keeps the
+    /// same last octet in every zone it visits.
+    fn populate_roaming(&mut self) -> Result<()> {
+        let mut roamers: Vec<(String, String, String)> = self
+            .hosts
+            .values()
+            .filter(|h| h.zone != EXTERNAL_ZONE_KEY)
+            .filter_map(|h| {
+                h.mac
+                    .clone()
+                    .map(|mac| (h.hostname.clone(), h.zone.clone(), mac))
+            })
+            .collect();
+        roamers.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if roamers.len() > MAX_ROAMING_HOSTS {
+            return Err(NixError::validation(format!(
+                "{} hosts declare a MAC address, only {MAX_ROAMING_HOSTS} roaming addresses fit in the reserved block",
+                roamers.len()
+            )));
+        }
+
+        let local_zones: Vec<String> = self
+            .network
+            .zones
+            .keys()
+            .filter(|n| n.as_str() != EXTERNAL_ZONE_KEY)
+            .cloned()
+            .collect();
+
+        // Guard the block before allocating anything inside it.
+        for zone_name in &local_zones {
+            self.network.get_zone(zone_name)?.assert_roaming_block_free()?;
+        }
+
+        for (index, (hostname, home_zone, mac)) in roamers.iter().enumerate() {
+            for zone_name in &local_zones {
+                if zone_name == home_zone {
+                    continue;
+                }
+                let ip = format!(
+                    "{}.{ROAMING_SUBNET}.{}",
+                    self.network.get_zone(zone_name)?.ip_prefix(),
+                    index + 1
+                );
+                self.network
+                    .get_zone_mut(zone_name)?
+                    .register_roaming_host(hostname, mac, &ip)?;
+            }
+        }
 
         Ok(())
     }
@@ -298,6 +364,7 @@ impl Configuration {
         // Mirror the host into the zone (DHCP, aliases) and into the service
         // registry, then publish a DNS record.
         let mac = mac_single(&host_val.mac);
+        host.mac = mac.clone();
         let zone = self.network.get_zone_mut(&zone_name)?;
         zone.register_host(hostname, ip.as_deref(), false)?;
         if let (Some(ip_str), Some(mac)) = (&ip, mac.as_deref()) {

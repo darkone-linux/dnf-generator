@@ -13,6 +13,11 @@ use dnf_generator::nix_generator::nix_service::ServiceRegistry;
 /// - dnf/hosts/disko/{profile}.nix for each disko profile in the fixture
 /// - dnf/hosts/templates/usr-machines-default.nix
 fn setup_test_root() -> (TempDir, PathBuf) {
+    setup_test_root_with(include_str!("fixtures/config.yaml"))
+}
+
+/// Same scaffolding, driven by an arbitrary `etc/config.yaml` fixture.
+fn setup_test_root_with(config_yaml: &str) -> (TempDir, PathBuf) {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
 
@@ -54,11 +59,7 @@ fn setup_test_root() -> (TempDir, PathBuf) {
     fs::create_dir_all(root.join("etc")).unwrap();
     fs::create_dir_all(root.join("var/generated")).unwrap();
 
-    fs::write(
-        root.join("etc/config.yaml"),
-        include_str!("fixtures/config.yaml"),
-    )
-    .unwrap();
+    fs::write(root.join("etc/config.yaml"), config_yaml).unwrap();
     fs::write(
         root.join("var/generated/config.yaml"),
         include_str!("fixtures/config_generated.yaml"),
@@ -1067,5 +1068,111 @@ fn generate_disko_always_overwrites_generated_configuration() {
     assert!(
         !content.contains("stale"),
         "generated-configuration.nix must be overwritten\n\nActual:\n{content}"
+    );
+}
+
+// ─── roaming reservations (two-zone fixture) ────────────────────────────────
+
+/// `network.nix` for the two-zone fixture, sliced per zone so an assertion
+/// cannot accidentally match a record belonging to the other zone.
+fn roaming_network() -> String {
+    let (_dir, root) = setup_test_root_with(include_str!("fixtures/config_roaming.yaml"));
+    make_generate(&root).generate_network_raw().unwrap()
+}
+
+/// Raw generator output is a single line (nixfmt runs later), so the zone block
+/// is extracted by brace matching rather than by line layout.
+fn zone_slice(output: &str, zone: &str) -> String {
+    let marker = format!("{zone} = {{");
+    let start = output
+        .find(&marker)
+        .unwrap_or_else(|| panic!("zone {zone} missing from output:\n{output}"))
+        + marker.len();
+    let mut depth = 1usize;
+    for (offset, c) in output[start..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return output[start..start + offset].to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("zone {zone} block is not closed:\n{output}");
+}
+
+#[test]
+fn roaming_reserves_foreign_hosts_in_every_other_zone() {
+    let output = roaming_network();
+    let alpha = zone_slice(&output, "alpha");
+    let beta = zone_slice(&output, "beta");
+
+    // gw-beta (index 2) is native to beta, so alpha holds its reservation.
+    assert!(
+        alpha.contains(r#""bb:bb:bb:bb:bb:b1,10.7.6.2""#),
+        "alpha should reserve gw-beta at 10.7.6.2:\n{alpha}"
+    );
+
+    // gw-alpha (index 1) and laptop (index 3) are native to alpha.
+    assert!(
+        beta.contains(r#""aa:aa:aa:aa:aa:a1,10.8.6.1""#),
+        "beta should reserve gw-alpha at 10.8.6.1:\n{beta}"
+    );
+    assert!(
+        beta.contains(r#""cc:cc:cc:cc:cc:c1,cc:cc:cc:cc:cc:c2,10.8.6.3""#),
+        "beta should reserve both laptop MACs at 10.8.6.3:\n{beta}"
+    );
+}
+
+#[test]
+fn roaming_index_is_fleet_wide() {
+    let output = roaming_network();
+
+    // Same last octet everywhere: only the zone prefix changes.
+    assert!(zone_slice(&output, "alpha").contains(r#"gw-beta = "10.7.6.2""#));
+    assert!(zone_slice(&output, "beta").contains(r#"gw-alpha = "10.8.6.1""#));
+}
+
+#[test]
+fn roaming_never_reserves_a_host_in_its_own_zone() {
+    let output = roaming_network();
+    let alpha = zone_slice(&output, "alpha");
+
+    assert!(
+        !alpha.contains("gw-alpha = \"10.7.6"),
+        "a host must not roam in its home zone:\n{alpha}"
+    );
+    assert!(
+        !alpha.contains("aa:aa:aa:aa:aa:a1,10.7.6"),
+        "a host must not roam in its home zone:\n{alpha}"
+    );
+}
+
+#[test]
+fn roaming_host_without_mac_gets_no_reservation() {
+    let output = roaming_network();
+
+    assert_absent(&output, "nomad = \"10.");
+    assert_absent(&output, "nomad.alpha.test.lan,10.7.6");
+}
+
+#[test]
+fn roaming_adds_a_fqdn_record_under_the_visited_zone_only() {
+    let output = roaming_network();
+    let alpha = zone_slice(&output, "alpha");
+
+    // Reachable where it is plugged...
+    assert!(
+        alpha.contains(r#""gw-beta.alpha.test.lan,10.7.6.2""#),
+        "alpha should resolve gw-beta.alpha.test.lan:\n{alpha}"
+    );
+
+    // ...while the short name keeps pointing at its home address.
+    assert!(
+        alpha.contains(r#""gw-beta,gw-beta.beta.test.lan,10.8.1.1""#),
+        "the home record must stay untouched:\n{alpha}"
     );
 }

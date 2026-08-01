@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_yaml::Value;
 
@@ -9,6 +9,11 @@ use crate::nix_generator::validation::{assert_regex, assert_tailscale_ip, RE_MAC
 const DEFAULT_LAN_IP_PREFIX: &str = "10.1";
 const LAN_PREFIX_LENGTH: u8 = 16;
 pub const EXTERNAL_ZONE_KEY: &str = "www";
+
+/// Third octet reserved, in every zone, for hosts whose home is another zone
+/// (`<ipPrefix>.6.<n>`). The zone addressing convention keeps 1..5 and 11..99
+/// for native hosts, so this block is free everywhere.
+pub const ROAMING_SUBNET: u8 = 6;
 
 #[derive(Debug)]
 pub struct NixZone {
@@ -23,6 +28,8 @@ pub struct NixZone {
     all_aliases: HashSet<String>,
     /// hostname -> `Option<ip>`
     hosts: HashMap<String, Option<String>>,
+    /// Hosts native to another zone, reserved here: hostname -> (macs, ip)
+    roaming: BTreeMap<String, (String, String)>,
     pub dhcp_range: Vec<String>,
     pub config: HashMap<String, serde_yaml::Value>,
 }
@@ -36,6 +43,7 @@ impl NixZone {
             aliases: HashMap::new(),
             all_aliases: HashSet::new(),
             hosts: HashMap::new(),
+            roaming: BTreeMap::new(),
             dhcp_range: vec![],
             config: HashMap::new(),
         }
@@ -85,6 +93,44 @@ impl NixZone {
 
     pub fn aliases(&self) -> &HashMap<String, Vec<String>> {
         &self.aliases
+    }
+
+    pub fn roaming(&self) -> &BTreeMap<String, (String, String)> {
+        &self.roaming
+    }
+
+    /// Reserve `ip` in this zone for `host`, whose home is another zone, so a
+    /// machine plugged here gets a predictable lease instead of a dynamic one.
+    ///
+    /// A host is either native or roaming, never both: a MAC already declared
+    /// here means the fleet describes the same machine twice.
+    pub fn register_roaming_host(&mut self, host: &str, mac: &str, ip: &str) -> Result<()> {
+        for part in mac.split(',') {
+            if self.all_macs.contains(part) {
+                return Err(NixError::validation(format!(
+                    "Mac address {part} of roaming host {host} is already declared in zone {}",
+                    self.name
+                )));
+            }
+        }
+        self.roaming
+            .insert(host.to_string(), (mac.to_string(), ip.to_string()));
+        Ok(())
+    }
+
+    /// The roaming block must stay free of native hosts: allocation there is
+    /// computed, not declared, so any overlap is a config error.
+    pub fn assert_roaming_block_free(&self) -> Result<()> {
+        let block = format!("{}.{}.", self.ip_prefix(), ROAMING_SUBNET);
+        for (host, ip) in &self.hosts {
+            if ip.as_deref().is_some_and(|i| i.starts_with(&block)) {
+                return Err(NixError::validation(format!(
+                    "Host \"{host}\" uses {block}0/24, reserved for roaming hosts in zone {}",
+                    self.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn register_host(&mut self, host: &str, ip: Option<&str>, force: bool) -> Result<()> {
@@ -414,6 +460,46 @@ mod tests {
         z.register_host("b", Some("10.1.2.2"), false).unwrap();
         z.register_aliases("a", &["alias1".to_string()]).unwrap();
         assert!(z.register_aliases("b", &["alias1".to_string()]).is_err());
+    }
+
+    #[test]
+    fn register_roaming_host_valid() {
+        let mut z = NixZone::new("beta");
+        z.register_roaming_host("laptop", "aa:bb:cc:dd:ee:ff", "10.8.6.3")
+            .unwrap();
+        assert_eq!(
+            z.roaming().get("laptop"),
+            Some(&("aa:bb:cc:dd:ee:ff".to_string(), "10.8.6.3".to_string()))
+        );
+    }
+
+    #[test]
+    fn register_roaming_host_native_mac_fails() {
+        let mut z = NixZone::new("beta");
+        z.register_mac_addresses("aa:bb:cc:dd:ee:ff", "10.8.2.1")
+            .unwrap();
+        assert!(z
+            .register_roaming_host("laptop", "aa:bb:cc:dd:ee:ff", "10.8.6.3")
+            .is_err());
+    }
+
+    #[test]
+    fn roaming_block_free_by_default() {
+        let mut z = NixZone::new("beta");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("server1", Some("10.1.2.1"), false).unwrap();
+        assert!(z.assert_roaming_block_free().is_ok());
+    }
+
+    #[test]
+    fn roaming_block_used_by_native_host_fails() {
+        let mut z = NixZone::new("beta");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("intruder", Some("10.1.6.1"), false)
+            .unwrap();
+        assert!(z.assert_roaming_block_free().is_err());
     }
 
     #[test]
