@@ -4,7 +4,9 @@ use std::path::Path;
 use indexmap::IndexMap;
 
 use crate::error::{NixError, Result};
-use crate::nix_generator::validation::{assert_arch, assert_regex, RE_DEVICE, RE_IDENTIFIER, RE_LOGIN};
+use crate::nix_generator::validation::{
+    assert_arch, assert_regex, RE_DEVICE, RE_IDENTIFIER, RE_LOGIN,
+};
 
 #[derive(Debug, Default)]
 pub struct ServiceParams {

@@ -67,8 +67,9 @@ impl Configuration {
 
         // Strict schema gate: reject unknown keys / type mismatches up-front,
         // reporting the exact path of any violation.
-        let schema: ConfigFile = serde_path_to_error::deserialize(merged.clone())
-            .map_err(|e| NixError::validation(format!("config.yaml: {} (at {})", e.inner(), e.path())))?;
+        let schema: ConfigFile = serde_path_to_error::deserialize(merged.clone()).map_err(|e| {
+            NixError::validation(format!("config.yaml: {} (at {})", e.inner(), e.path()))
+        })?;
 
         let project_root = main_yaml
             .parent()
@@ -176,11 +177,7 @@ impl Configuration {
 
     // ─── users ──────────────────────────────────────────────────────────────
 
-    fn load_users(
-        &mut self,
-        users: &IndexMap<String, UserCfg>,
-        project_root: &Path,
-    ) -> Result<()> {
+    fn load_users(&mut self, users: &IndexMap<String, UserCfg>, project_root: &Path) -> Result<()> {
         // Pre-reserve the special nix UID so a regular user can't steal it.
         let mut uid_tracker: HashMap<u32, String> = HashMap::new();
         uid_tracker.insert(NIX_USER_UID, NIX_USER_NAME.to_string());
@@ -298,7 +295,9 @@ impl Configuration {
 
         // Guard the block before allocating anything inside it.
         for zone_name in &local_zones {
-            self.network.get_zone(zone_name)?.assert_roaming_block_free()?;
+            self.network
+                .get_zone(zone_name)?
+                .assert_roaming_block_free()?;
         }
 
         for (index, (hostname, home_zone, mac)) in roamers.iter().enumerate() {
@@ -359,7 +358,11 @@ impl Configuration {
         host.ip = ip.clone();
         host.vpn_ip = host_val.ipv4.as_ref().and_then(|v| v.internal.clone());
         host.services = services;
-        host.set_disko(disko_profile(host_val), disko_devices(host_val), project_root)?;
+        host.set_disko(
+            disko_profile(host_val),
+            disko_devices(host_val),
+            project_root,
+        )?;
 
         // Mirror the host into the zone (DHCP, aliases) and into the service
         // registry, then publish a DNS record.
@@ -509,11 +512,7 @@ fn disko_devices(host_val: &HostEntry) -> HashMap<String, String> {
         .disko
         .as_ref()
         .and_then(|d| d.devices.as_ref())
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default()
 }
 

@@ -69,8 +69,7 @@ impl ServiceRegistry {
         let mut requires: HashMap<String, Vec<String>> = HashMap::new();
 
         for av in root_set.attrpath_values() {
-            let (Some(attrpath), Some(Expr::AttrSet(svc_set))) = (av.attrpath(), av.value())
-            else {
+            let (Some(attrpath), Some(Expr::AttrSet(svc_set))) = (av.attrpath(), av.value()) else {
                 continue;
             };
 
@@ -257,7 +256,11 @@ mod tests {
         }"#;
         let reg = ServiceRegistry::from_nix(nix).unwrap();
 
-        let mon: Vec<&str> = reg.requires("monitoring").iter().map(String::as_str).collect();
+        let mon: Vec<&str> = reg
+            .requires("monitoring")
+            .iter()
+            .map(String::as_str)
+            .collect();
         assert_eq!(mon, ["prometheus"]);
 
         let graf: Vec<&str> = reg.requires("grafana").iter().map(String::as_str).collect();

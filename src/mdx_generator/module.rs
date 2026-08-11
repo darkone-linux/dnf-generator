@@ -239,8 +239,7 @@ fn render_category_page(c: &CollectedCategory, order: usize) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "---\ntitle: {}\nsidebar:\n  order: {order}\n  label: {}\n---\n\n",
-        c.category.title,
-        c.category.short
+        c.category.title, c.category.short
     ));
     out.push_str(&format!(":::note\n{}\n:::\n\n", c.category.description));
     for entry in &c.entries {
@@ -448,7 +447,7 @@ fn render_options(entry: &ModuleEntry) -> String {
             let trimmed = desc.trim().trim_matches('"');
             if !trimmed.is_empty() {
                 bullets.push(' ');
-                bullets.push_str(&escape(trimmed));
+                bullets.push_str(&indent_continuation(&escape(trimmed), &indent));
             }
         }
         bullets.push('\n');
@@ -486,6 +485,23 @@ fn render_options(entry: &ModuleEntry) -> String {
     code.push_str("```\n\n");
 
     format!("{bullets}{code}")
+}
+
+/// Indents the lines following the first one so a multi-paragraph description
+/// stays inside its bullet: an unindented blank line closes the list item, and
+/// what follows (`:::caution` blocks, nested bullets) then lands outside it.
+fn indent_continuation(text: &str, indent: &str) -> String {
+    let mut lines = text.lines();
+    let mut out = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        out.push('\n');
+        if !line.trim().is_empty() {
+            out.push_str(indent);
+            out.push_str("  ");
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 fn code_value(opt: &NixOption) -> String {

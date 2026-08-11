@@ -51,13 +51,15 @@ fn main() {
 
     let main_yaml = workdir.join("etc/config.yaml");
     let generated_yaml = workdir.join("var/generated/config.yaml");
-    let registry_path =
-        registry_path.unwrap_or_else(|| workdir.join("dnf/config/modules.nix"));
+    let registry_path = registry_path.unwrap_or_else(|| workdir.join("dnf/config/modules.nix"));
 
     let registry = match ServiceRegistry::load(&registry_path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ERR: cannot load service registry {}: {e}", registry_path.display());
+            eprintln!(
+                "ERR: cannot load service registry {}: {e}",
+                registry_path.display()
+            );
             std::process::exit(1);
         }
     };
