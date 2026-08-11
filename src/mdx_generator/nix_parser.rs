@@ -480,10 +480,28 @@ fn starts_with_at(chars: &std::iter::Peekable<std::str::Chars>, needle: &str) ->
     cloned == needle
 }
 
+/// Drops the body of an inline submodule so the label stays a label:
+/// `listOf ( submodule { options = { … } } )` → `listOf submodule`. The body is
+/// raw Nix source (comments, quotes, backticks, `<ip>:<port>` placeholders) and
+/// would break the inline code span it is written into. The inner options are
+/// documented as nested bullets anyway.
+fn compact_type_expr(raw: &str) -> String {
+    let head = match raw.find(['{', '#']) {
+        Some(pos) => raw[..pos].replace(['(', ')'], " "),
+        // Nothing to cut: keep composed labels like `enum [ "a" "b" ]` intact.
+        None => raw.to_string(),
+    };
+    // A backtick would close the code span of the bullet.
+    head.replace('`', "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Reduces an arbitrary type expression to one of the well-known short labels.
 fn simplify_type(raw: Option<&str>) -> String {
     let raw = match raw {
-        Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+        Some(r) if !r.trim().is_empty() => compact_type_expr(r.trim()),
         _ => return String::new(),
     };
     if raw.starts_with("submodule") {
@@ -839,5 +857,45 @@ mod tests {
         let opts = parse_module_options(src);
         assert_eq!(opts[0].type_label, "listOf str");
         assert_eq!(opts[0].default.as_deref(), Some("[ ]"));
+    }
+
+    #[test]
+    fn inline_submodule_type_label_is_compacted() {
+        let src = r#"
+{ lib, ... }: {
+  options = {
+    darkone.x.silences = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            # Not the `<ip>:<port>` instance.
+            host = lib.mkOption {
+              type = lib.types.str;
+              description = "Host";
+            };
+          };
+        }
+      );
+      description = "Silences";
+    };
+  };
+}
+"#;
+        let opts = parse_module_options(src);
+        assert_eq!(opts[0].type_label, "listOf submodule");
+        assert_eq!(opts[1].name, "host");
+        assert_eq!(opts[1].type_label, "str");
+    }
+
+    #[test]
+    fn composed_type_label_is_kept() {
+        assert_eq!(
+            simplify_type(Some(r#"enum [ "base" "client" ]"#)),
+            r#"enum [ "base" "client" ]"#
+        );
+        assert_eq!(
+            simplify_type(Some("nullOr ( submodule { x = 1; } )")),
+            "nullOr submodule"
+        );
     }
 }

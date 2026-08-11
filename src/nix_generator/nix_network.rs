@@ -175,9 +175,17 @@ impl NixNetwork {
 
         // Validate
         assert_regex(RE_LOCALE, &locale, "Bad default network locale syntax")?;
-        assert_regex(RE_TIMEZONE, &timezone, "Bad default network timezone syntax")?;
+        assert_regex(
+            RE_TIMEZONE,
+            &timezone,
+            "Bad default network timezone syntax",
+        )?;
         if !coord_hostname.is_empty() {
-            assert_regex(RE_HOSTNAME, &coord_hostname, "Bad coordination hostname type")?;
+            assert_regex(
+                RE_HOSTNAME,
+                &coord_hostname,
+                "Bad coordination hostname type",
+            )?;
         }
         assert_regex(RE_HOSTNAME, &coord_domain, "Bad Headscale domain name")?;
 

@@ -27,11 +27,7 @@ pub struct Generate {
 }
 
 impl Generate {
-    pub fn new(
-        main_yaml: &Path,
-        generated_yaml: &Path,
-        registry: ServiceRegistry,
-    ) -> Result<Self> {
+    pub fn new(main_yaml: &Path, generated_yaml: &Path, registry: ServiceRegistry) -> Result<Self> {
         let project_root = main_yaml
             .parent()
             .and_then(|p| p.parent())
@@ -202,7 +198,11 @@ impl Generate {
         // dhcp-host: sorted MAC entries (stable diffs), native hosts first then
         // the reservations held for hosts visiting from another zone.
         let mut dhcp_entries: Vec<String> = zone.mac_addresses().values().cloned().collect();
-        dhcp_entries.extend(zone.roaming().values().map(|(mac, ip)| format!("{mac},{ip}")));
+        dhcp_entries.extend(
+            zone.roaming()
+                .values()
+                .map(|(mac, ip)| format!("{mac},{ip}")),
+        );
         dhcp_entries.sort();
         settings.set("dhcp-host", Box::new(NixList::from_strings(dhcp_entries)));
 
@@ -281,7 +281,13 @@ impl Generate {
 
             if svc.zone == EXTERNAL_ZONE_KEY {
                 // www: only external-access services are reachable from the LAN.
-                if self.config.network.registry.flags(&svc.name).external_access {
+                if self
+                    .config
+                    .network
+                    .registry
+                    .flags(&svc.name)
+                    .external_access
+                {
                     if let Some(ip) = host_ip {
                         let fqdn = svc.fqdn(
                             svc_zone.map(|z| z.domain()).unwrap_or(network_domain),
@@ -372,7 +378,13 @@ impl Generate {
             if svc.zone == EXTERNAL_ZONE_KEY || svc.global {
                 continue;
             }
-            if self.config.network.registry.flags(&svc.name).external_access {
+            if self
+                .config
+                .network
+                .registry
+                .flags(&svc.name)
+                .external_access
+            {
                 continue;
             }
             if let Some(svc_zone) = self.config.network.zones.get(&svc.zone) {
@@ -394,7 +406,13 @@ impl Generate {
             if svc.zone == EXTERNAL_ZONE_KEY || svc.global {
                 continue;
             }
-            if !self.config.network.registry.flags(&svc.name).external_access {
+            if !self
+                .config
+                .network
+                .registry
+                .flags(&svc.name)
+                .external_access
+            {
                 continue;
             }
             let Some(svc_zone) = self.config.network.zones.get(&svc.zone) else {
@@ -404,7 +422,10 @@ impl Generate {
                 continue;
             };
             let mut entry = NixAttrSet::new();
-            entry.set_string("fqdn", format!("{}.{}", svc.domain_label(), svc_zone.domain()));
+            entry.set_string(
+                "fqdn",
+                format!("{}.{}", svc.domain_label(), svc_zone.domain()),
+            );
             entry.set_string("target", target);
             list.add(Box::new(entry));
         }
@@ -423,7 +444,13 @@ impl Generate {
             if svc.zone != EXTERNAL_ZONE_KEY || !svc.global {
                 continue;
             }
-            if self.config.network.registry.flags(&svc.name).external_access {
+            if self
+                .config
+                .network
+                .registry
+                .flags(&svc.name)
+                .external_access
+            {
                 continue;
             }
             entries.push(format!(
