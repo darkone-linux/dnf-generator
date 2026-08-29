@@ -94,7 +94,7 @@ pub struct Matrix {
 
 // ─── zones ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneCfg {
     #[serde(default)]
@@ -111,7 +111,7 @@ pub struct ZoneCfg {
     pub extra_hosts: Option<IndexMap<String, ExtraHost>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gateway {
     #[serde(default)]
@@ -122,14 +122,14 @@ pub struct Gateway {
     pub vpn: Option<GatewayVpn>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayWan {
     #[serde(default)]
     pub interface: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayLan {
     #[serde(default)]
@@ -138,14 +138,14 @@ pub struct GatewayLan {
     pub dhcp_range: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayVpn {
     #[serde(default)]
     pub ipv4: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtraHost {
     pub ip: String,

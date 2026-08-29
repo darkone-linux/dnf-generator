@@ -31,6 +31,9 @@ const MAX_RANGE_BOUND: i64 = 1000;
 
 /// Usable hosts in the roaming /24 (`.1` … `.254`).
 const MAX_ROAMING_HOSTS: usize = 254;
+
+/// Pseudo-zone holding the defaults shared by every real zone.
+const COMMON_ZONE_KEY: &str = "common";
 const DEFAULT_PROFILE: &str = "minimal";
 const NIX_USER_NAME: &str = "nix";
 const NIX_USER_UID: u32 = 65000;
@@ -118,16 +121,19 @@ impl Configuration {
             return Ok(());
         };
 
-        // `zones.common` carries cross-zone defaults but is not itself a zone;
-        // it is skipped here.
+        // `zones.common` carries cross-zone defaults but is not itself a zone:
+        // it is overlaid under every other zone instead of being declared.
+        let common = zones.get(COMMON_ZONE_KEY);
+
         for (zone_name, zone_cfg) in zones {
-            if zone_name == "common" {
+            if zone_name == COMMON_ZONE_KEY {
                 continue;
             }
+            let zone_cfg = merge_common_zone(common, zone_cfg);
 
             let mut zone = NixZone::new(zone_name.as_str());
             zone.register_zone_config(
-                Some(zone_cfg),
+                Some(&zone_cfg),
                 &self.network.config.default_locale,
                 &self.network.config.default_timezone,
                 &self.network.config.domain,
@@ -538,6 +544,34 @@ fn parse_range(range: &[i64]) -> Result<(i64, i64)> {
         )));
     }
     Ok((start, end))
+}
+
+/// Overlay `zones.common` under one zone: shared defaults, zone values win.
+///
+/// `extraHosts` is merged entry by entry — that is what the key is for: a phone
+/// or a printer declared once keeps the same host suffix in every zone, with a
+/// zone free to redefine or add its own. The remaining fields are whole-value
+/// defaults; a half-inherited `gateway` would describe no real router.
+fn merge_common_zone(common: Option<&ZoneCfg>, zone: &ZoneCfg) -> ZoneCfg {
+    let Some(common) = common else {
+        return zone.clone();
+    };
+    let extra_hosts = match (&common.extra_hosts, &zone.extra_hosts) {
+        (Some(shared), Some(own)) => {
+            let mut merged = shared.clone();
+            merged.extend(own.clone());
+            Some(merged)
+        }
+        (shared, own) => own.clone().or_else(|| shared.clone()),
+    };
+    ZoneCfg {
+        description: zone.description.clone().or(common.description.clone()),
+        locale: zone.locale.clone().or(common.locale.clone()),
+        timezone: zone.timezone.clone().or(common.timezone.clone()),
+        ip_prefix: zone.ip_prefix.clone().or(common.ip_prefix.clone()),
+        gateway: zone.gateway.clone().or(common.gateway.clone()),
+        extra_hosts,
+    }
 }
 
 /// Convert a typed `services:` mapping into the internal `ServiceParams` map,

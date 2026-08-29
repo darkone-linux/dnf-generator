@@ -1,0 +1,47 @@
+# Two zones plus a `common` pseudo-zone, to check that the shared defaults are
+# overlaid under every real zone and that zone values keep the upper hand.
+
+network:
+  domain: "test.lan"
+  default:
+    locale: "fr_FR.UTF-8"
+    timezone: "Europe/Paris"
+
+zones:
+
+  lab:
+    description: "Lab zone"
+    ipPrefix: "10.9"
+    extraHosts:
+      printer:
+        ip: "5.10"
+        name: "Lab printer"
+
+  home:
+    ipPrefix: "10.8"
+    extraHosts:
+      printer:
+        ip: "5.99"
+        name: "Home printer"
+
+  common:
+    description: "Shared default description"
+    extraHosts:
+      phone:
+        ip: "5.1"
+        name: "Shared phone"
+        mac: "ea:10:53:9d:df:d2"
+
+users:
+  admin:
+    uid: 1000
+    name: "Admin User"
+    profile: "admin-profile"
+    groups: ["staff"]
+
+hosts:
+  - hostname: "ws"
+    name: "Workstation"
+    zone: "lab:1.5"
+    profile: "desktop-profile"
+    users: ["admin"]

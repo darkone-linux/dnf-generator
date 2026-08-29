@@ -915,6 +915,59 @@ fn generate_network_local_zone_reverse_proxy_uses_gateway_ip() {
     );
 }
 
+// ─── zones.common tests ──────────────────────────────────────────────────────
+
+/// `network.nix` for the fixture carrying a `common` pseudo-zone.
+fn common_zone_network() -> String {
+    let (_dir, root) = setup_test_root_with(include_str!("fixtures/config_common_zone.yaml"));
+    make_generate(&root).generate_network_raw().unwrap()
+}
+
+#[test]
+fn common_zone_is_not_declared_as_a_zone() {
+    let output = common_zone_network();
+    assert_absent(&output, "common = {");
+}
+
+#[test]
+fn common_extra_hosts_land_in_every_zone() {
+    let output = common_zone_network();
+    assert!(
+        output.contains("phone,phone.lab.test.lan,10.9.5.1"),
+        "the shared phone must exist in the lab zone.\n\nActual output:\n{output}"
+    );
+    assert!(
+        output.contains("phone,phone.home.test.lan,10.8.5.1"),
+        "the shared phone must exist in the home zone.\n\nActual output:\n{output}"
+    );
+}
+
+#[test]
+fn zone_extra_hosts_win_over_common_ones() {
+    let output = common_zone_network();
+    assert!(
+        output.contains("printer,printer.lab.test.lan,10.9.5.10"),
+        "the lab printer keeps its own suffix.\n\nActual output:\n{output}"
+    );
+    assert!(
+        output.contains("printer,printer.home.test.lan,10.8.5.99"),
+        "the home printer keeps its own suffix.\n\nActual output:\n{output}"
+    );
+}
+
+#[test]
+fn common_scalars_are_defaults_only() {
+    let output = common_zone_network();
+    let home = zone_slice(&output, "home");
+    let lab = zone_slice(&output, "lab");
+
+    // `home` declares no description: it inherits the common one.
+    assert_str_field(&home, "description", "Shared default description");
+
+    // `lab` declares its own: the common value must not override it.
+    assert_str_field(&lab, "description", "Lab zone");
+}
+
 // ─── user overlay seeding tests ──────────────────────────────────────────────
 
 #[test]
