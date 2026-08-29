@@ -915,6 +915,51 @@ fn generate_network_local_zone_reverse_proxy_uses_gateway_ip() {
     );
 }
 
+// ─── user overlay seeding tests ──────────────────────────────────────────────
+
+#[test]
+fn generate_users_seeds_per_user_overlays() {
+    let (_dir, root) = setup_test_root();
+    make_generate(&root).run("users").unwrap();
+
+    // Declared logins plus the implicit `nix` maintenance account.
+    assert!(
+        root.join("usr/users/nix/default.nix").is_file(),
+        "the nix user overlay must be seeded"
+    );
+    assert!(
+        root.join("usr/users/admin/default.nix").is_file(),
+        "a declared user overlay must be seeded"
+    );
+}
+
+#[test]
+fn generate_users_keeps_existing_overlays() {
+    let (_dir, root) = setup_test_root();
+    let target = root.join("usr/users/admin/default.nix");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, "# mine\n{ }\n").unwrap();
+
+    make_generate(&root).run("users").unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "# mine\n{ }\n");
+}
+
+// ─── output directory tests ──────────────────────────────────────────────────
+
+#[test]
+fn generate_creates_missing_output_dir() {
+    let (_dir, root) = setup_test_root();
+    let gen = make_generate(&root);
+
+    // A freshly cloned workspace (dnf-boilerplate) ships no var/generated/.
+    fs::remove_dir_all(root.join("var/generated")).unwrap();
+    gen.run("hosts").unwrap();
+    assert!(
+        root.join("var/generated/hosts.nix").is_file(),
+        "hosts.nix must be written into a re-created var/generated/"
+    );
+}
+
 // ─── generate_disko tests ────────────────────────────────────────────────────
 
 #[test]

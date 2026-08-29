@@ -72,8 +72,32 @@ impl Generate {
 
     fn generate_users(&self) -> Result<String> {
         let content = self.generate_users_raw()?;
+        self.seed_user_overlays()?;
         let target = self.project_root.join("var/generated/users.nix");
         write_and_format(&target, &content)
+    }
+
+    /// Seed `usr/users/<login>/default.nix` for every declared login (the
+    /// implicit `nix` account included). The framework imports that path
+    /// unconditionally, so a missing directory fails the evaluation with a bare
+    /// `path does not exist`. Seeded once, then owned by the user.
+    fn seed_user_overlays(&self) -> Result<()> {
+        for user in self.config.users.values() {
+            let user_dir = self.project_root.join("usr/users").join(&user.login);
+            let target = user_dir.join("default.nix");
+            seed_if_missing(&target, || {
+                std::fs::create_dir_all(&user_dir)?;
+                let profile = user.profile.rsplit('/').next().unwrap_or(&user.profile);
+                std::fs::write(
+                    &target,
+                    format!(
+                        "# Home manager overlay of {} (profile: {profile}).\n\n{{ }}\n",
+                        user.login
+                    ),
+                )
+            })?;
+        }
+        Ok(())
     }
 
     pub fn generate_users_raw(&self) -> Result<String> {
@@ -746,6 +770,11 @@ where
 /// Write `content` to `target`, then run `nixfmt -sv` on it (best-effort —
 /// formatter failures don't fail the generator).
 fn write_and_format(target: &Path, content: &str) -> Result<String> {
+    // A fresh workspace (boilerplate clone) has no `var/generated/` yet: create
+    // the destination rather than failing with a bare ENOENT.
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(target, content)?;
     let _ = std::process::Command::new("nixfmt")
         .arg("-sv")
