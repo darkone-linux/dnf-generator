@@ -256,6 +256,15 @@ impl Configuration {
             self.load_static_host(host, project_root)?;
         }
         self.populate_zones()?;
+
+        // Before roaming: a fixed address caught in the dynamic pool is a
+        // declaration error, and the roaming allocator would only pile more
+        // reservations on top of it.
+        for zone_name in self.network.zones.keys().cloned().collect::<Vec<_>>() {
+            self.network
+                .get_zone(&zone_name)?
+                .assert_hosts_outside_dhcp_range()?;
+        }
         self.populate_roaming()?;
 
         Ok(())

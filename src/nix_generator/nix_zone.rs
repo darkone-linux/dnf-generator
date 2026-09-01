@@ -4,7 +4,9 @@ use serde_yaml::Value;
 
 use crate::error::{NixError, Result};
 use crate::nix_generator::schema::{Gateway, ZoneCfg};
-use crate::nix_generator::validation::{assert_regex, assert_tailscale_ip, RE_MAC_ADDRESS};
+use crate::nix_generator::validation::{
+    assert_regex, assert_tailscale_ip, ipv4_to_u32, RE_MAC_ADDRESS,
+};
 
 const DEFAULT_LAN_IP_PREFIX: &str = "10.1";
 const LAN_PREFIX_LENGTH: u8 = 16;
@@ -128,6 +130,42 @@ impl NixZone {
                     "Host \"{host}\" uses {block}0/24, reserved for roaming hosts in zone {}",
                     self.name
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// A declared fixed address must sit outside the dynamic pool.
+    ///
+    /// dnsmasq honours a `dhcp-host` reservation only while the address has
+    /// not already been leased from `dhcp-range`; an overlap therefore renumbers
+    /// the host silently at its first boot — precisely the address the install
+    /// tooling was told to come back to.
+    pub fn assert_hosts_outside_dhcp_range(&self) -> Result<()> {
+        for range in &self.dhcp_range {
+            let mut bounds = range.split(',');
+            let (Some(start), Some(end)) = (
+                bounds.next().and_then(ipv4_to_u32),
+                bounds.next().and_then(ipv4_to_u32),
+            ) else {
+                continue;
+            };
+            // Sorted: a HashMap would report a different offender on every
+            // run when several hosts overlap.
+            let mut declared: Vec<(&String, &Option<String>)> = self.hosts.iter().collect();
+            declared.sort_by(|a, b| a.0.cmp(b.0));
+            for (host, ip) in declared {
+                let Some(addr) = ip.as_deref().and_then(ipv4_to_u32) else {
+                    continue;
+                };
+                if (start..=end).contains(&addr) {
+                    return Err(NixError::validation(format!(
+                        "Host \"{host}\" has fixed ip {} inside the dhcp-range {range} of zone {}: \
+                         pick an address outside the dynamic pool",
+                        ip.as_deref().unwrap_or_default(),
+                        self.name
+                    )));
+                }
             }
         }
         Ok(())
@@ -508,6 +546,77 @@ mod tests {
         z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
             .unwrap();
         assert_eq!(z.dhcp_range, vec!["10.1.3.200,10.1.3.249,24h"]);
+    }
+
+    #[test]
+    fn fixed_ip_outside_dhcp_range_ok() {
+        let mut z = NixZone::new("lab");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("server1", Some("10.1.2.1"), false).unwrap();
+        assert!(z.assert_hosts_outside_dhcp_range().is_ok());
+    }
+
+    #[test]
+    fn fixed_ip_inside_dhcp_range_fails() {
+        let mut z = NixZone::new("lab");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("laptop", Some("10.1.3.238"), false)
+            .unwrap();
+        let err = z.assert_hosts_outside_dhcp_range().unwrap_err().to_string();
+        assert!(err.contains("laptop"), "{err}");
+        assert!(err.contains("10.1.3.238"), "{err}");
+    }
+
+    /// Boundaries are part of the pool: dnsmasq leases them like any other.
+    #[test]
+    fn dhcp_range_bounds_are_inclusive() {
+        let mut z = NixZone::new("lab");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("edge", Some("10.1.3.200"), false).unwrap();
+        assert!(z.assert_hosts_outside_dhcp_range().is_err());
+    }
+
+    /// A host with no declared address (DHCP-only) is not a conflict.
+    #[test]
+    fn host_without_ip_ignored() {
+        let mut z = NixZone::new("lab");
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("nomad", None, false).unwrap();
+        assert!(z.assert_hosts_outside_dhcp_range().is_ok());
+    }
+
+    #[test]
+    fn several_dhcp_ranges_all_checked() {
+        let mut z = NixZone::new("lab");
+        let cfg: ZoneCfg = serde_yaml::from_str(
+            "ipPrefix: \"10.4\"\n\
+             gateway:\n\
+             \x20 wan: { interface: eth0 }\n\
+             \x20 lan:\n\
+             \x20   interfaces: [eth1]\n\
+             \x20   dhcp-range:\n\
+             \x20     - \"10.4.3.10,10.4.3.20,24h\"\n\
+             \x20     - \"10.4.7.10,10.4.7.20,24h\"\n",
+        )
+        .unwrap();
+        z.register_zone_config(Some(&cfg), "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("second", Some("10.4.7.15"), false).unwrap();
+        assert!(z.assert_hosts_outside_dhcp_range().is_err());
+    }
+
+    /// The external zone has no pool at all: nothing to compare against.
+    #[test]
+    fn external_zone_has_no_range_to_check() {
+        let mut z = NixZone::new(EXTERNAL_ZONE_KEY);
+        z.register_zone_config(None, "fr_FR.UTF-8", "Europe/Paris", "darkone.lan")
+            .unwrap();
+        z.register_host("hcs", Some("10.1.3.210"), false).unwrap();
+        assert!(z.assert_hosts_outside_dhcp_range().is_ok());
     }
 
     #[test]

@@ -77,7 +77,9 @@ pub fn assert_tailscale_ip(ip: &str) -> Result<()> {
     Ok(())
 }
 
-fn ipv4_to_u32(ip: &str) -> Option<u32> {
+/// Shared by the tailnet check and the DHCP-range overlap guard
+/// (`nix_zone.rs`): both need to compare addresses, not strings.
+pub fn ipv4_to_u32(ip: &str) -> Option<u32> {
     let parts: Vec<u32> = ip.split('.').filter_map(|p| p.parse().ok()).collect();
     if parts.len() != 4 || parts.iter().any(|&p| p > 255) {
         return None;
