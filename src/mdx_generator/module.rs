@@ -378,11 +378,27 @@ fn collect_entries(dir: &Path, prefix: &str) -> Vec<ModuleEntry> {
     entries
 }
 
+/// Escape `<` and `>` outside backtick-delimited code spans so that bare
+/// angle sequences like `<->` don't get interpreted as JSX tags in MDX.
+fn escape_angle_brackets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_code = false;
+    for ch in text.chars() {
+        match ch {
+            '`' => { in_code = !in_code; out.push(ch); }
+            '<' if !in_code => out.push_str("&lt;"),
+            '>' if !in_code => out.push_str("&gt;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn render_module(entry: &ModuleEntry, icon: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("### {icon} {}\n\n", entry.path));
     if let Some(c) = &entry.comment {
-        out.push_str(c);
+        out.push_str(&escape_angle_brackets(c));
         out.push_str("\n\n");
     }
     out.push_str(&render_options(entry));
