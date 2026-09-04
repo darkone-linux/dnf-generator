@@ -649,9 +649,6 @@ fn build_network_default(d: &NetworkDefault) -> NixAttrSet {
     if let Some(tz) = &d.timezone {
         attrs.set_string("timezone", tz);
     }
-    if let Some(hash) = &d.password_hash {
-        attrs.set_string("password-hash", hash);
-    }
     attrs
 }
 

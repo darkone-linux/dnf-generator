@@ -52,9 +52,6 @@ pub struct NetworkDefault {
     pub locale: Option<String>,
     #[serde(default)]
     pub timezone: Option<String>,
-    /// Injected by the framework into `var/generated/config.yaml`.
-    #[serde(default, rename = "password-hash")]
-    pub password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
