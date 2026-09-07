@@ -86,7 +86,7 @@ pub struct Smtp {
 #[serde(deny_unknown_fields)]
 pub struct Matrix {
     #[serde(default)]
-    pub admin: Option<String>,
+    pub admins: Option<Vec<String>>,
 }
 
 // ─── zones ───────────────────────────────────────────────────────────────────

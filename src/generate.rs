@@ -691,8 +691,12 @@ fn build_network_smtp(s: &Smtp) -> NixAttrSet {
 
 fn build_network_matrix(m: &Matrix) -> NixAttrSet {
     let mut attrs = NixAttrSet::new();
-    if let Some(admin) = &m.admin {
-        attrs.set_string("admin", admin);
+    if let Some(admins) = &m.admins {
+        let mut list = NixList::new();
+        for admin in admins {
+            list.add_string(admin);
+        }
+        attrs.set("admins", Box::new(list));
     }
     attrs
 }
