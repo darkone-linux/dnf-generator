@@ -29,9 +29,9 @@ run command debug='':
 
 # Bump version, changelog and tag: just bump [auto|patch|minor|major|X.Y.Z]
 bump level="auto" *args:
-    bash ../../dnf/assets/scripts/just-bump.sh \
-        --config ../../dnf/assets/release/cliff.toml --level {{ level }} {{ args }}
+    bash ../../dnf/just/scripts/bump.sh \
+        --config ../../dnf/just/scripts/cliff.toml --level {{ level }} {{ args }}
 
 # Preview the entry the next release would carry — writes nothing
 changelog:
-    @git-cliff --config ../../dnf/assets/release/cliff.toml --unreleased --bump 2>/dev/null
+    @git-cliff --config ../../dnf/just/scripts/cliff.toml --unreleased --bump 2>/dev/null
