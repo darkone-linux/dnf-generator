@@ -626,6 +626,27 @@ fn generate_network_structure() {
 }
 
 #[test]
+fn generate_network_fleet_update_absent_by_default() {
+    let (_dir, root) = setup_test_root();
+    let output = make_generate(&root).generate_network_raw().unwrap();
+    assert_absent(&output, "fleetUpdate");
+}
+
+#[test]
+fn generate_network_fleet_update() {
+    let yaml = include_str!("fixtures/config.yaml").replacen(
+        "network:\n",
+        "network:\n  fleetUpdate:\n    deploymentOrder: \"hcs:gateway:[others]:laptop\"\n    criticalProfiles: \"hcs:gateway\"\n",
+        1,
+    );
+    let (_dir, root) = setup_test_root_with(&yaml);
+    let output = make_generate(&root).generate_network_raw().unwrap();
+    assert!(output.contains("fleetUpdate"), "Missing fleetUpdate");
+    assert_str_field(&output, "deploymentOrder", "hcs:gateway:[others]:laptop");
+    assert_str_field(&output, "criticalProfiles", "hcs:gateway");
+}
+
+#[test]
 fn generate_network_domain() {
     let (_dir, root) = setup_test_root();
     let output = make_generate(&root).generate_network_raw().unwrap();

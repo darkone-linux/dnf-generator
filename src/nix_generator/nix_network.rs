@@ -6,9 +6,12 @@ use crate::error::{NixError, Result};
 use crate::nix_generator::item::host::ServiceParams;
 use crate::nix_generator::nix_service::{NixService, ServiceRegistry};
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
-use crate::nix_generator::schema::{Coordination, Matrix, NetworkCfg, NetworkDefault, Smtp};
+use crate::nix_generator::schema::{
+    Coordination, FleetUpdate, Matrix, NetworkCfg, NetworkDefault, Smtp,
+};
 use crate::nix_generator::validation::{
-    assert_email, assert_regex, RE_FQDN, RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
+    assert_email, assert_profile_list, assert_regex, RE_FQDN, RE_HOSTNAME, RE_LOCALE,
+    RE_SMTP_PROTOCOL, RE_TIMEZONE,
 };
 
 const DEFAULT_DOMAIN: &str = "darkone.lan";
@@ -30,6 +33,7 @@ pub struct NetworkConfig {
     pub coordination: Option<Coordination>,
     pub smtp: Option<Smtp>,
     pub matrix: Option<Matrix>,
+    pub fleet_update: Option<FleetUpdate>,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +153,7 @@ impl NixNetwork {
         let default = cfg.and_then(|c| c.default.as_ref());
         let coord = cfg.and_then(|c| c.coordination.as_ref());
         let smtp = cfg.and_then(|c| c.smtp.as_ref());
+        let fleet_update = cfg.and_then(|c| c.fleet_update.as_ref());
 
         // Apply defaults
         let domain = cfg
@@ -202,6 +207,16 @@ impl NixNetwork {
             }
         }
 
+        // fleet-update defaults: syntax only, the tool applies them
+        if let Some(fu) = fleet_update {
+            if let Some(order) = fu.deployment_order.as_deref() {
+                assert_profile_list(order, true, "Bad fleetUpdate deploymentOrder")?;
+            }
+            if let Some(critical) = fu.critical_profiles.as_deref() {
+                assert_profile_list(critical, false, "Bad fleetUpdate criticalProfiles")?;
+            }
+        }
+
         self.config = NetworkConfig {
             domain,
             default_locale: locale,
@@ -213,6 +228,7 @@ impl NixNetwork {
             coordination: coord.cloned(),
             smtp: smtp.cloned(),
             matrix: cfg.and_then(|c| c.matrix.clone()),
+            fleet_update: fleet_update.cloned(),
         };
 
         Ok(())
@@ -230,6 +246,22 @@ mod tests {
         let cfg: NetworkCfg = serde_yaml::from_str("domain: mynet.lan\ncoordination:\n  domain: headscale\n  hostname: hcs\n  enable: false\ndefault:\n  locale: fr_FR.UTF-8\n  timezone: Europe/Paris").unwrap();
         assert!(net.register_network_config(Some(&cfg)).is_ok());
         assert_eq!(net.config.domain, "mynet.lan");
+    }
+
+    #[test]
+    fn register_network_config_fleet_update() {
+        let mut net = NixNetwork::default();
+        let cfg: NetworkCfg = serde_yaml::from_str("fleetUpdate:\n  deploymentOrder: \"hcs:gateway:[others]\"\n  criticalProfiles: \"hcs:gateway\"").unwrap();
+        assert!(net.register_network_config(Some(&cfg)).is_ok());
+        let fu = net.config.fleet_update.as_ref().unwrap();
+        assert_eq!(fu.deployment_order.as_deref(), Some("hcs:gateway:[others]"));
+
+        let bad: NetworkCfg =
+            serde_yaml::from_str("fleetUpdate:\n  criticalProfiles: \"hcs:[others]\"").unwrap();
+        assert!(NixNetwork::default()
+            .register_network_config(Some(&bad))
+            .is_err());
+        assert!(serde_yaml::from_str::<NetworkCfg>("fleetUpdate:\n  order: \"hcs\"").is_err());
     }
 
     #[test]

@@ -17,6 +17,10 @@ pub const RE_LOCALE: &str = r"^[a-z][a-z]_[A-Z][A-Z]\.UTF-8$";
 pub const RE_TIMEZONE: &str = r"^([A-Za-z]+)/([A-Za-z0-9_-]+)(/([A-Za-z0-9_-]+))?$";
 pub const RE_SMTP_PROTOCOL: &str = r"^(http|https|submission|submissions)$";
 pub const RE_IP_SUFFIX: &str = r"^([0-9]{1,3}\.)?[0-9]{1,3}$";
+pub const RE_PROFILE: &str = r"^[a-zA-Z][a-zA-Z0-9_-]*$";
+
+/// Profile placeholder of `fleet-update`'s deployment order: every profile not listed.
+pub const OTHERS_PROFILE: &str = "[others]";
 
 // Host `arch` whitelist: compact `cpu[:board]` form consumed by the framework's
 // `parseArch` (dnf/lib/hive.nix). `x86_64-linux` is kept as a legacy alias.
@@ -39,6 +43,23 @@ pub fn assert_regex(pattern: &str, value: &str, err: &str) -> Result<()> {
         return Err(NixError::validation(format!(
             "Syntax error for \"{value}\": {err}"
         )));
+    }
+    Ok(())
+}
+
+/// `:`-separated host profiles, as `fleet-update` takes them. No closed list:
+/// consumers declare their own host profiles. `[others]` at most once, and
+/// only where `allow_others` (deployment order).
+pub fn assert_profile_list(value: &str, allow_others: bool, err: &str) -> Result<()> {
+    let re = Regex::new(RE_PROFILE).expect("Invalid regex pattern");
+    let mut seen = std::collections::HashSet::new();
+    for item in value.split(':') {
+        let valid = re.is_match(item) || (allow_others && item == OTHERS_PROFILE);
+        if !valid || !seen.insert(item) {
+            return Err(NixError::validation(format!(
+                "Syntax error for \"{value}\": {err}"
+            )));
+        }
     }
     Ok(())
 }
@@ -90,6 +111,23 @@ pub fn ipv4_to_u32(ip: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_profile_lists() {
+        assert!(assert_profile_list("hcs:gateway:server:[others]:laptop", true, "").is_ok());
+        assert!(assert_profile_list("hcs:gateway:server", false, "").is_ok());
+        assert!(assert_profile_list("admin-desktop", false, "").is_ok());
+    }
+
+    #[test]
+    fn invalid_profile_lists() {
+        assert!(assert_profile_list("", true, "").is_err());
+        assert!(assert_profile_list("hcs::server", true, "").is_err());
+        assert!(assert_profile_list("hcs,server", true, "").is_err());
+        assert!(assert_profile_list("hcs:hcs", true, "").is_err());
+        assert!(assert_profile_list("[others]:hcs:[others]", true, "").is_err());
+        assert!(assert_profile_list("hcs:[others]", false, "").is_err());
+    }
 
     #[test]
     fn valid_hostname() {

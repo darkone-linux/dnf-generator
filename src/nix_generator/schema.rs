@@ -43,6 +43,8 @@ pub struct NetworkCfg {
     pub smtp: Option<Smtp>,
     #[serde(default)]
     pub matrix: Option<Matrix>,
+    #[serde(default, rename = "fleetUpdate")]
+    pub fleet_update: Option<FleetUpdate>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +89,17 @@ pub struct Smtp {
 pub struct Matrix {
     #[serde(default)]
     pub admins: Option<Vec<String>>,
+}
+
+/// Consumer defaults of `fleet-update`, same syntax as its options
+/// (`--deployment-order`, `--critical-profiles`), which override them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FleetUpdate {
+    #[serde(default, rename = "deploymentOrder")]
+    pub deployment_order: Option<String>,
+    #[serde(default, rename = "criticalProfiles")]
+    pub critical_profiles: Option<String>,
 }
 
 // ─── zones ───────────────────────────────────────────────────────────────────
