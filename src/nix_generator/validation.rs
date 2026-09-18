@@ -22,6 +22,22 @@ pub const RE_PROFILE: &str = r"^[a-zA-Z][a-zA-Z0-9_-]*$";
 /// Profile placeholder of `fleet-update`'s deployment order: every profile not listed.
 pub const OTHERS_PROFILE: &str = "[others]";
 
+/// Keys of `network.fleetUpdate.timeouts`, mirrored from the tool
+/// (`TIMEOUT_KEYS`, `src/model/params.ts`). Also the emission order.
+pub const TIMEOUT_KEYS: &[&str] = &[
+    "flakeUpdate",
+    "clean",
+    "commit",
+    "eval",
+    "build",
+    "copy",
+    "activation",
+    "ssh",
+    "ping",
+    "matrix",
+    "killGrace",
+];
+
 // Host `arch` whitelist: compact `cpu[:board]` form consumed by the framework's
 // `parseArch` (dnf/lib/hive.nix). `x86_64-linux` is kept as a legacy alias.
 pub const ALLOWED_ARCH: &[&str] = &[
@@ -62,6 +78,27 @@ pub fn assert_profile_list(value: &str, allow_others: bool, err: &str) -> Result
         }
     }
     Ok(())
+}
+
+/// A mistyped key is rejected here rather than silently ignored by the tool.
+pub fn assert_timeout_key(key: &str, err: &str) -> Result<()> {
+    if TIMEOUT_KEYS.contains(&key) {
+        return Ok(());
+    }
+    Err(NixError::validation(format!(
+        "Unknown timeout \"{key}\": {err} (one of: {})",
+        TIMEOUT_KEYS.join(", ")
+    )))
+}
+
+/// Strictly positive: `0` would remove the bound instead of setting it.
+pub fn assert_seconds(value: i64, err: &str) -> Result<()> {
+    if value > 0 {
+        return Ok(());
+    }
+    Err(NixError::validation(format!(
+        "Delay \"{value}\": {err} is not a positive number of seconds"
+    )))
 }
 
 pub fn assert_email(value: &str, err: &str) -> Result<()> {
@@ -127,6 +164,22 @@ mod tests {
         assert!(assert_profile_list("hcs:hcs", true, "").is_err());
         assert!(assert_profile_list("[others]:hcs:[others]", true, "").is_err());
         assert!(assert_profile_list("hcs:[others]", false, "").is_err());
+    }
+
+    #[test]
+    fn timeout_keys() {
+        assert!(assert_timeout_key("killGrace", "").is_ok());
+        assert!(assert_timeout_key("flakeUpdate", "").is_ok());
+        assert!(assert_timeout_key("biuld", "").is_err());
+        assert!(assert_timeout_key("", "").is_err());
+    }
+
+    #[test]
+    fn seconds() {
+        assert!(assert_seconds(1, "").is_ok());
+        assert!(assert_seconds(10800, "").is_ok());
+        assert!(assert_seconds(0, "").is_err());
+        assert!(assert_seconds(-5, "").is_err());
     }
 
     #[test]

@@ -647,6 +647,57 @@ fn generate_network_fleet_update() {
 }
 
 #[test]
+fn generate_network_fleet_update_timeouts_and_ping_interval() {
+    let yaml = include_str!("fixtures/config.yaml").replacen(
+        "network:\n",
+        "network:\n  fleetUpdate:\n    pingInterval: 20\n    timeouts:\n      ssh: 45\n      build: 7200\n",
+        1,
+    );
+    let (_dir, root) = setup_test_root_with(&yaml);
+    let output = make_generate(&root).generate_network_raw().unwrap();
+    assert!(output.contains("timeouts"), "Missing timeouts");
+    assert!(output.contains("build = 7200;"), "Missing build timeout");
+    assert!(output.contains("ssh = 45;"), "Missing ssh timeout");
+    assert!(
+        output.contains("pingInterval = 20;"),
+        "Missing pingInterval"
+    );
+
+    // `TIMEOUT_KEYS` order, not the YAML's.
+    assert!(
+        output.find("build =").unwrap() < output.find("ssh =").unwrap(),
+        "Timeouts must follow TIMEOUT_KEYS order.\n\nActual output:\n{output}"
+    );
+}
+
+#[test]
+fn generate_network_fleet_update_rejects_bad_delays() {
+    // Delays are validated at load: a bad one never reaches the emitter.
+    let refused = |fleet_update: &str| {
+        let yaml = include_str!("fixtures/config.yaml").replacen(
+            "network:\n",
+            &format!("network:\n  fleetUpdate:\n{fleet_update}"),
+            1,
+        );
+        let (_dir, root) = setup_test_root_with(&yaml);
+        let registry = ServiceRegistry::from_nix(include_str!("fixtures/modules.nix")).unwrap();
+        Generate::new(
+            &root.join("etc/config.yaml"),
+            &root.join("var/generated/config.yaml"),
+            registry,
+        )
+        .is_err()
+    };
+
+    assert!(
+        refused("    timeouts:\n      biuld: 7200\n"),
+        "mistyped key"
+    );
+    assert!(refused("    timeouts:\n      ping: 0\n"), "zero delay");
+    assert!(refused("    pingInterval: -1\n"), "negative interval");
+}
+
+#[test]
 fn generate_network_domain() {
     let (_dir, root) = setup_test_root();
     let output = make_generate(&root).generate_network_raw().unwrap();

@@ -10,8 +10,8 @@ use crate::nix_generator::schema::{
     Coordination, FleetUpdate, Matrix, NetworkCfg, NetworkDefault, Smtp,
 };
 use crate::nix_generator::validation::{
-    assert_email, assert_profile_list, assert_regex, RE_FQDN, RE_HOSTNAME, RE_LOCALE,
-    RE_SMTP_PROTOCOL, RE_TIMEZONE,
+    assert_email, assert_profile_list, assert_regex, assert_seconds, assert_timeout_key, RE_FQDN,
+    RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
 };
 
 const DEFAULT_DOMAIN: &str = "darkone.lan";
@@ -215,6 +215,15 @@ impl NixNetwork {
             if let Some(critical) = fu.critical_profiles.as_deref() {
                 assert_profile_list(critical, false, "Bad fleetUpdate criticalProfiles")?;
             }
+            if let Some(timeouts) = &fu.timeouts {
+                for (key, seconds) in timeouts {
+                    assert_timeout_key(key, "Bad fleetUpdate timeouts")?;
+                    assert_seconds(*seconds, &format!("Bad fleetUpdate timeouts {key}"))?;
+                }
+            }
+            if let Some(interval) = fu.ping_interval {
+                assert_seconds(interval, "Bad fleetUpdate pingInterval")?;
+            }
         }
 
         self.config = NetworkConfig {
@@ -262,6 +271,37 @@ mod tests {
             .register_network_config(Some(&bad))
             .is_err());
         assert!(serde_yaml::from_str::<NetworkCfg>("fleetUpdate:\n  order: \"hcs\"").is_err());
+    }
+
+    #[test]
+    fn register_network_config_fleet_update_delays() {
+        let mut net = NixNetwork::default();
+        let cfg: NetworkCfg = serde_yaml::from_str(
+            "fleetUpdate:\n  pingInterval: 20\n  timeouts:\n    ssh: 45\n    build: 7200",
+        )
+        .unwrap();
+        assert!(net.register_network_config(Some(&cfg)).is_ok());
+        let fu = net.config.fleet_update.as_ref().unwrap();
+        assert_eq!(fu.ping_interval, Some(20));
+        assert_eq!(fu.timeouts.as_ref().unwrap()["build"], 7200);
+
+        let mistyped: NetworkCfg =
+            serde_yaml::from_str("fleetUpdate:\n  timeouts:\n    biuld: 7200").unwrap();
+        assert!(NixNetwork::default()
+            .register_network_config(Some(&mistyped))
+            .is_err());
+
+        let zero: NetworkCfg =
+            serde_yaml::from_str("fleetUpdate:\n  timeouts:\n    ping: 0").unwrap();
+        assert!(NixNetwork::default()
+            .register_network_config(Some(&zero))
+            .is_err());
+
+        let negative: NetworkCfg =
+            serde_yaml::from_str("fleetUpdate:\n  pingInterval: -1").unwrap();
+        assert!(NixNetwork::default()
+            .register_network_config(Some(&negative))
+            .is_err());
     }
 
     #[test]

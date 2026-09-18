@@ -100,6 +100,15 @@ pub struct FleetUpdate {
     pub deployment_order: Option<String>,
     #[serde(default, rename = "criticalProfiles")]
     pub critical_profiles: Option<String>,
+
+    /// Longest run of an operation, in seconds (spec § Délais). Keys checked
+    /// against `TIMEOUT_KEYS`: a typo would fall back to a default in silence.
+    #[serde(default)]
+    pub timeouts: Option<IndexMap<String, i64>>,
+
+    /// Seconds between two pings of the hosts being watched (spec § Présence).
+    #[serde(default, rename = "pingInterval")]
+    pub ping_interval: Option<i64>,
 }
 
 // ─── zones ───────────────────────────────────────────────────────────────────
