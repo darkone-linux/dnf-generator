@@ -76,6 +76,28 @@ impl NixNetwork {
         self.services.values().collect()
     }
 
+    /// Zones holding hosts but no `harmonia` service, sorted by name.
+    ///
+    /// Without one the zone caches nothing the fleet builds: every host is
+    /// served path by path over its uplink, and `fleet-update` has no builder
+    /// to elect there. The external zone is skipped — it is not a LAN.
+    pub fn zones_without_harmonia(&self) -> Vec<String> {
+        let mut missing: Vec<String> = self
+            .zones
+            .values()
+            .filter(|zone| !zone.is_external() && !zone.hosts().is_empty())
+            .filter(|zone| {
+                !self
+                    .services
+                    .values()
+                    .any(|svc| svc.name == "harmonia" && svc.zone == zone.name)
+            })
+            .map(|zone| zone.name.clone())
+            .collect();
+        missing.sort();
+        missing
+    }
+
     /// Register all services declared on a host.
     /// `hostname`: the host registering the services
     /// `zone`: the host's zone name
@@ -331,6 +353,23 @@ mod tests {
         let services2: IndexMap<_, _> = [make_service("nextcloud", false)].into_iter().collect();
         net.register_services("nas1", "lab", &services1).unwrap();
         assert!(net.register_services("nas2", "lab", &services2).is_err());
+    }
+
+    #[test]
+    fn zones_without_harmonia_skips_served_and_external_zones() {
+        let mut net = NixNetwork::default();
+        for name in ["ag", "lg", EXTERNAL_ZONE_KEY] {
+            let mut zone = NixZone::new(name);
+            zone.register_host("h1", Some("10.0.0.1"), false).unwrap();
+            net.add_zone(zone);
+        }
+
+        // Declared but empty: nothing to serve, nothing to warn about.
+        net.add_zone(NixZone::new("empty"));
+        let harmonia: IndexMap<_, _> = [make_service("harmonia", false)].into_iter().collect();
+        net.register_services("h1", "ag", &harmonia).unwrap();
+
+        assert_eq!(net.zones_without_harmonia(), vec!["lg".to_string()]);
     }
 
     #[test]

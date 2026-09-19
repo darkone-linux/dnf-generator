@@ -131,6 +131,13 @@ impl Generate {
 
     fn generate_network(&self) -> Result<String> {
         let content = self.generate_network_raw()?;
+
+        // Actionable, never fatal: a zone can run without its own cache.
+        for zone in self.config.network.zones_without_harmonia() {
+            eprintln!(
+                "WARN: zone '{zone}' has no harmonia service: everything the fleet builds for it travels host by host. Declare 'harmonia:' on one of its hosts."
+            );
+        }
         let target = self.project_root.join("var/generated/network.nix");
         write_and_format(&target, &content)
     }
