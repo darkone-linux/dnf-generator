@@ -30,6 +30,7 @@ pub const TIMEOUT_KEYS: &[&str] = &[
     "commit",
     "eval",
     "build",
+    "publish",
     "copy",
     "activation",
     "ssh",
