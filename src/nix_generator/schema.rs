@@ -109,6 +109,11 @@ pub struct FleetUpdate {
     /// Seconds between two pings of the hosts being watched (spec § Présence).
     #[serde(default, rename = "pingInterval")]
     pub ping_interval: Option<i64>,
+
+    /// `<tool>[:<model>][@<effort>]` of `--ai-model` (spec § Intégration IA).
+    /// Syntax only: the tool reports a model or an effort it does not know.
+    #[serde(default, rename = "aiModel")]
+    pub ai_model: Option<String>,
 }
 
 // ─── zones ───────────────────────────────────────────────────────────────────

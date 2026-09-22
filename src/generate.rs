@@ -720,6 +720,9 @@ fn build_network_fleet_update(fu: &FleetUpdate) -> NixAttrSet {
     if let Some(critical) = &fu.critical_profiles {
         attrs.set_string("criticalProfiles", critical);
     }
+    if let Some(model) = &fu.ai_model {
+        attrs.set_string("aiModel", model);
+    }
 
     // `TIMEOUT_KEYS` order, not the YAML's: reordering the config must not
     // diff the generated file.

@@ -19,6 +19,10 @@ pub const RE_SMTP_PROTOCOL: &str = r"^(http|https|submission|submissions)$";
 pub const RE_IP_SUFFIX: &str = r"^([0-9]{1,3}\.)?[0-9]{1,3}$";
 pub const RE_PROFILE: &str = r"^[a-zA-Z][a-zA-Z0-9_-]*$";
 
+/// `--ai-model` of `fleet-update`, mirrored from the tool (`parseAiModel`,
+/// `src/ai/model.ts`). Effort after `@`: an ollama tag carries its own colon.
+pub const RE_AI_MODEL: &str = r"^(claude|opencode)(:[^@\s]+)?(@[a-zA-Z0-9_-]+)?$";
+
 /// Profile placeholder of `fleet-update`'s deployment order: every profile not listed.
 pub const OTHERS_PROFILE: &str = "[others]";
 

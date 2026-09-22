@@ -10,8 +10,8 @@ use crate::nix_generator::schema::{
     Coordination, FleetUpdate, Matrix, NetworkCfg, NetworkDefault, Smtp,
 };
 use crate::nix_generator::validation::{
-    assert_email, assert_profile_list, assert_regex, assert_seconds, assert_timeout_key, RE_FQDN,
-    RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
+    assert_email, assert_profile_list, assert_regex, assert_seconds, assert_timeout_key,
+    RE_AI_MODEL, RE_FQDN, RE_HOSTNAME, RE_LOCALE, RE_SMTP_PROTOCOL, RE_TIMEZONE,
 };
 
 const DEFAULT_DOMAIN: &str = "darkone.lan";
@@ -246,6 +246,9 @@ impl NixNetwork {
             if let Some(interval) = fu.ping_interval {
                 assert_seconds(interval, "Bad fleetUpdate pingInterval")?;
             }
+            if let Some(model) = fu.ai_model.as_deref() {
+                assert_regex(RE_AI_MODEL, model, "Bad fleetUpdate aiModel")?;
+            }
         }
 
         self.config = NetworkConfig {
@@ -293,6 +296,23 @@ mod tests {
             .register_network_config(Some(&bad))
             .is_err());
         assert!(serde_yaml::from_str::<NetworkCfg>("fleetUpdate:\n  order: \"hcs\"").is_err());
+    }
+
+    #[test]
+    fn register_network_config_fleet_update_ai_model() {
+        let mut net = NixNetwork::default();
+        let cfg: NetworkCfg =
+            serde_yaml::from_str("fleetUpdate:\n  aiModel: \"opencode:ollama/qwen3:32b@high\"")
+                .unwrap();
+        assert!(net.register_network_config(Some(&cfg)).is_ok());
+        let fu = net.config.fleet_update.as_ref().unwrap();
+        assert_eq!(fu.ai_model.as_deref(), Some("opencode:ollama/qwen3:32b@high"));
+
+        // A tool the deployment machine has no way to launch.
+        let bad: NetworkCfg = serde_yaml::from_str("fleetUpdate:\n  aiModel: \"gemini:pro\"").unwrap();
+        assert!(NixNetwork::default()
+            .register_network_config(Some(&bad))
+            .is_err());
     }
 
     #[test]
