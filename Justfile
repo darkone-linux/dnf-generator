@@ -25,7 +25,7 @@ run command debug='':
 
 # Shares the framework's release script and git-cliff config: one changelog
 # format and one commit vocabulary across the whole ecosystem. The framework
-# pins the tag this produces (`just release`, step 3).
+# pins the tag this produces (`just release`).
 
 # Bump version, changelog and tag: just bump [auto|patch|minor|major|X.Y.Z]
 bump level="auto" *args:
