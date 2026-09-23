@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.1.1] - 2026-09-23
+
+### Added
+
+- **network**: Add fleetUpdate deployment defaults
+- **network**: FleetUpdate timeouts and pingInterval
+- **network**: Accept the publish timeout key of fleet-update
+- **network**: Warn on a zone without harmonia
+- **engine**: Read the fleet AI model from the generator
+- **release**: Idempotent ordered release train
+
 ## [0.1.0] - 2026-09-09
 
 ### Added
@@ -46,5 +57,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/darkone-linux/dnf-generator/releases/tag/v0.1.0
