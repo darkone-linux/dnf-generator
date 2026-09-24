@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.2.0] - 2026-09-24
+
+### ⚠ Breaking
+
+- **machines**: Split usr/machines by provenance
+
 ## [0.1.1] - 2026-09-23
 
 ### Added
@@ -57,6 +63,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/darkone-linux/dnf-generator/releases/tag/v0.1.0
