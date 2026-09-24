@@ -7,7 +7,10 @@ pub const RE_HOSTNAME: &str = r"^[a-zA-Z][a-zA-Z0-9_-]{1,59}$";
 pub const RE_FQDN: &str = r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[A-Za-z]{2,63}$";
 pub const RE_LOGIN: &str = r"^[a-zA-Z][a-zA-Z0-9_-]{1,59}$";
 pub const RE_IDENTIFIER: &str = r"^[a-z][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$";
-pub const RE_DEVICE: &str = r"^/dev(/[a-zA-Z0-9]+){1,3}$";
+
+/// Stable names (`/dev/disk/by-id/…`) included. No `"`, `\`, `$` or `@`: the
+/// value is pasted into a Nix string of `install/disko.nix`.
+pub const RE_DEVICE: &str = r"^/dev(/[A-Za-z0-9._:+-]+){1,3}$";
 pub const RE_MAC_ADDRESS: &str =
     r"^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$";
 pub const RE_NAME: &str = r"^.{3,128}$";
@@ -169,6 +172,29 @@ mod tests {
         assert!(assert_profile_list("hcs:hcs", true, "").is_err());
         assert!(assert_profile_list("[others]:hcs:[others]", true, "").is_err());
         assert!(assert_profile_list("hcs:[others]", false, "").is_err());
+    }
+
+    #[test]
+    fn devices() {
+        for ok in [
+            "/dev/sda",
+            "/dev/nvme0n1",
+            "/dev/disk/by-id/nvme-WD_BLACK_SN850X_8000GB_25252R800194",
+            "/dev/disk/by-id/nvme-eui.0025385b71b07e2d",
+            "/dev/disk/by-path/pci-0000:00:1f.2-ata-1",
+        ] {
+            assert!(assert_regex(RE_DEVICE, ok, "").is_ok(), "{ok}");
+        }
+        for bad in [
+            "sda",
+            "/dev/",
+            "/dev/sd\"a",
+            "/dev/${x}",
+            "/dev/@DEVICE:main@",
+            "/dev/sd a",
+        ] {
+            assert!(assert_regex(RE_DEVICE, bad, "").is_err(), "{bad}");
+        }
     }
 
     #[test]

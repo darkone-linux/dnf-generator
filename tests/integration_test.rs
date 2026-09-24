@@ -11,7 +11,7 @@ use dnf_generator::nix_generator::nix_service::ServiceRegistry;
 /// - var/generated/config.yaml (empty overlay)
 /// - dnf/home/profiles/{profile}/ for each profile used in the fixture
 /// - dnf/hosts/disko/{profile}.nix for each disko profile in the fixture
-/// - dnf/hosts/templates/usr-machines-default.nix
+/// - dnf/hosts/templates/usr-machines-configuration.nix
 fn setup_test_root() -> (TempDir, PathBuf) {
     setup_test_root_with(include_str!("fixtures/config.yaml"))
 }
@@ -33,25 +33,26 @@ fn setup_test_root_with(config_yaml: &str) -> (TempDir, PathBuf) {
         fs::create_dir_all(root.join("dnf/home/profiles").join(profile)).unwrap();
     }
 
-    // Disko templates
+    // Disko profiles: disk paths are `@DEVICE:<disk>@` tokens
     fs::create_dir_all(root.join("dnf/hosts/disko")).unwrap();
     fs::write(
         root.join("dnf/hosts/disko/simple.nix"),
-        "{ disko.devices.disk.main.device = \"/dev/sda\"; }\n",
-    )
-    .unwrap();
-    // raid profile with mdadm and NEEDEDFORBOOT markers
-    fs::write(
-        root.join("dnf/hosts/disko/raid.nix"),
-        "# NEEDEDFORBOOT:/boot;/nix\n# Raid disko config\n{ disko.devices.disk.disk0.type = \"mdadm\"; }\n",
+        "# Simple profile\n{ disko.devices.disk.main.device = \"@DEVICE:main@\"; }\n",
     )
     .unwrap();
 
-    // Machine default template
+    // raid profile with mdadm and NEEDEDFORBOOT markers
+    fs::write(
+        root.join("dnf/hosts/disko/raid.nix"),
+        "# NEEDEDFORBOOT:/boot;/nix\n# Raid disko config\n{ disko.devices.disk.disk0.device = \"@DEVICE:disk0@\"; disko.devices.disk.disk1.device = \"@DEVICE:disk1@\"; disko.devices.mdadm.md0.type = \"mdadm\"; }\n",
+    )
+    .unwrap();
+
+    // Machine configuration template
     fs::create_dir_all(root.join("dnf/hosts/templates")).unwrap();
     fs::write(
-        root.join("dnf/hosts/templates/usr-machines-default.nix"),
-        "{ modulesPath, ... }: { imports = [ ./generated-configuration.nix ./hardware-configuration.nix ./disko.nix ]; }\n",
+        root.join("dnf/hosts/templates/usr-machines-configuration.nix"),
+        "# Host specific configuration (writable)\n\n{ ... }:\n{\n}\n",
     )
     .unwrap();
 
@@ -1085,159 +1086,261 @@ fn generate_creates_missing_output_dir() {
     );
 }
 
-// ─── generate_disko tests ────────────────────────────────────────────────────
+// ─── generate_machines tests ─────────────────────────────────────────────────
+
+fn read(root: &Path, rel: &str) -> String {
+    fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
 
 #[test]
-fn generate_disko_creates_machine_dir() {
+fn generate_machines_creates_machine_dir() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
+    make_generate(&root).run("machines").unwrap();
     assert!(
-        root.join("usr/machines/vps").is_dir(),
-        "vps machine dir must be created"
+        root.join("usr/machines/vps/install").is_dir(),
+        "vps install dir must be created"
     );
 }
 
 #[test]
-fn generate_disko_skips_hosts_without_disko() {
+fn generate_machines_skips_hosts_without_disko() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    // gw has no disko config → no machine dir created by disko
+    make_generate(&root).run("machines").unwrap();
+
+    // gw has no disko config → no machine dir, no generated file
     assert!(
         !root.join("usr/machines/gw").exists(),
         "gw has no disko, no dir should be created"
     );
+    assert!(!root.join("var/generated/hosts/gw.nix").exists());
 }
 
 #[test]
-fn generate_disko_copies_default_nix_template() {
+fn generate_machines_seeds_configuration_nix() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content = fs::read_to_string(root.join("usr/machines/vps/default.nix")).unwrap();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "usr/machines/vps/configuration.nix");
     assert!(
-        content.contains("imports"),
-        "default.nix must be copied from template"
+        content.contains("Host specific configuration"),
+        "configuration.nix must be copied from template\n\nActual:\n{content}"
     );
 }
 
 #[test]
-fn generate_disko_creates_empty_hardware_configuration() {
+fn generate_machines_does_not_overwrite_configuration_nix() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/vps/hardware-configuration.nix")).unwrap();
+    fs::create_dir_all(root.join("usr/machines/vps")).unwrap();
+    fs::write(root.join("usr/machines/vps/configuration.nix"), "# mine").unwrap();
+    make_generate(&root).run("machines").unwrap();
+    assert_eq!(read(&root, "usr/machines/vps/configuration.nix"), "# mine");
+}
+
+#[test]
+fn generate_machines_seeds_neither_hardware_nor_state() {
+    let (_dir, root) = setup_test_root();
+    make_generate(&root).run("machines").unwrap();
+    for rel in [
+        "usr/machines/vps/hardware",
+        "usr/machines/vps/hardware-configuration.nix",
+        "usr/machines/vps/install/state.nix",
+        "usr/machines/vps/default.nix",
+    ] {
+        assert!(!root.join(rel).exists(), "{rel} must not be seeded");
+    }
+}
+
+#[test]
+fn generate_machines_substitutes_device_tokens() {
+    let (_dir, root) = setup_test_root();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "usr/machines/vps/install/disko.nix");
+    assert!(
+        content.contains("\"/dev/sda\""),
+        "device must be substituted\n\nActual:\n{content}"
+    );
+    assert!(
+        !content.contains("@DEVICE:"),
+        "no token may remain\n\n{content}"
+    );
+    assert!(
+        content.contains("dnf/hosts/disko/simple.nix (main=/dev/sda)"),
+        "header must name the profile and devices\n\nActual:\n{content}"
+    );
+    assert!(
+        content.contains("# Simple profile"),
+        "profile body must follow"
+    );
+}
+
+#[test]
+fn generate_machines_substitutes_several_disks() {
+    let (_dir, root) = setup_test_root();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "usr/machines/ws/install/disko.nix");
+    assert!(content.contains("disk0.device = \"/dev/sdb\""), "{content}");
+    assert!(content.contains("disk1.device = \"/dev/sdc\""), "{content}");
+}
+
+#[test]
+fn generate_machines_token_without_device_fails() {
+    let (_dir, root) = setup_test_root();
+    fs::write(
+        root.join("dnf/hosts/disko/simple.nix"),
+        "{ disko.devices.disk.main.device = \"@DEVICE:main@\"; disko.devices.disk.extra.device = \"@DEVICE:extra@\"; }\n",
+    )
+    .unwrap();
+    let err = make_generate(&root)
+        .run("machines")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("extra"), "error must name the disk: {err}");
+    assert!(!root.join("usr/machines/vps/install/disko.nix").exists());
+}
+
+#[test]
+fn generate_machines_device_without_token_fails() {
+    let (_dir, root) = setup_test_root();
+    fs::write(
+        root.join("dnf/hosts/disko/simple.nix"),
+        "{ disko.devices.disk.main.device = \"/dev/sda\"; }\n",
+    )
+    .unwrap();
+    let err = make_generate(&root)
+        .run("machines")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("main"), "error must name the device: {err}");
+}
+
+#[test]
+fn generate_machines_malformed_token_fails() {
+    let (_dir, root) = setup_test_root();
+    fs::write(
+        root.join("dnf/hosts/disko/simple.nix"),
+        "{ a = \"@DEVICE:main@\"; b = \"@DEVICE:ma in@\"; }\n",
+    )
+    .unwrap();
+    let err = make_generate(&root)
+        .run("machines")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("malformed"), "{err}");
+}
+
+#[test]
+fn generate_machines_unsealed_follows_config() {
+    let (_dir, root) = setup_test_root();
+    fs::create_dir_all(root.join("usr/machines/vps/install")).unwrap();
+    fs::write(root.join("usr/machines/vps/install/disko.nix"), "# stale").unwrap();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "usr/machines/vps/install/disko.nix");
+    assert!(
+        content.contains("\"/dev/sda\""),
+        "unsealed host: install/disko.nix must be rewritten\n\nActual:\n{content}"
+    );
+}
+
+#[test]
+fn generate_machines_sealed_is_frozen() {
+    let (_dir, root) = setup_test_root();
+    fs::create_dir_all(root.join("usr/machines/vps/install")).unwrap();
+    fs::write(root.join("usr/machines/vps/install/disko.nix"), "# frozen").unwrap();
+    fs::write(
+        root.join("usr/machines/vps/install/state.nix"),
+        "{ system.stateVersion = \"25.11\"; }",
+    )
+    .unwrap();
+    make_generate(&root).run("machines").unwrap();
     assert_eq!(
-        content.trim(),
-        "{}",
-        "hardware-configuration.nix must be empty attrset"
+        read(&root, "usr/machines/vps/install/disko.nix"),
+        "# frozen"
+    );
+    assert_eq!(
+        read(&root, "usr/machines/vps/install/state.nix"),
+        "{ system.stateVersion = \"25.11\"; }"
     );
 }
 
 #[test]
-fn generate_disko_copies_disko_profile() {
+fn generate_machines_sealed_without_layout_is_seeded() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
+    fs::create_dir_all(root.join("usr/machines/vps/install")).unwrap();
+    fs::write(
+        root.join("usr/machines/vps/install/state.nix"),
+        "{ system.stateVersion = \"25.11\"; }",
+    )
+    .unwrap();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "usr/machines/vps/install/disko.nix");
+    assert!(content.contains("\"/dev/sda\""), "{content}");
+}
+
+#[test]
+fn generate_machines_no_host_file_when_nothing_to_force() {
+    let (_dir, root) = setup_test_root();
+    make_generate(&root).run("machines").unwrap();
     assert!(
-        root.join("usr/machines/vps/disko.nix").exists(),
-        "disko.nix must be copied"
+        !root.join("var/generated/hosts/vps.nix").exists(),
+        "simple layout forces nothing: no generated file"
     );
 }
 
 #[test]
-fn generate_disko_generated_conf_has_device() {
+fn generate_machines_raid_has_swraid_and_neededforboot() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/vps/generated-configuration.nix")).unwrap();
-    assert!(
-        content.contains("/dev/sda"),
-        "generated-configuration.nix must contain device path\n\nActual:\n{content}"
-    );
-}
-
-#[test]
-fn generate_disko_generated_conf_has_header() {
-    let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/vps/generated-configuration.nix")).unwrap();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "var/generated/hosts/ws.nix");
     assert!(
         content.contains("DO NOT EDIT"),
-        "generated-configuration.nix must have header\n\nActual:\n{content}"
+        "header\n\nActual:\n{content}"
+    );
+    assert!(content.contains("swraid"), "swraid\n\nActual:\n{content}");
+    assert!(content.contains("neededForBoot"), "{content}");
+    assert!(content.contains("/boot"), "{content}");
+    assert!(content.contains("/nix"), "{content}");
+    assert!(
+        !content.contains("/dev/sd"),
+        "devices are substituted, never forced\n\nActual:\n{content}"
     );
 }
 
 #[test]
-fn generate_disko_generated_conf_no_swraid_for_simple() {
+fn generate_machines_host_file_from_frozen_layout_only() {
     let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/vps/generated-configuration.nix")).unwrap();
-    assert!(
-        !content.contains("swraid"),
-        "simple profile must not have swraid\n\nActual:\n{content}"
-    );
-}
 
-#[test]
-fn generate_disko_raid_has_swraid_and_neededforboot() {
-    let (_dir, root) = setup_test_root();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/ws/generated-configuration.nix")).unwrap();
-    assert!(
-        content.contains("swraid"),
-        "raid profile must enable swraid\n\nActual:\n{content}"
-    );
-    assert!(
-        content.contains("neededForBoot"),
-        "raid profile must set neededForBoot\n\nActual:\n{content}"
-    );
-    assert!(
-        content.contains("/boot"),
-        "raid profile must include /boot partition\n\nActual:\n{content}"
-    );
-    assert!(
-        content.contains("/nix"),
-        "raid profile must include /nix partition\n\nActual:\n{content}"
-    );
-}
-
-#[test]
-fn generate_disko_does_not_overwrite_existing_disko_nix() {
-    let (_dir, root) = setup_test_root();
-    // Pre-create disko.nix with custom content
-    fs::create_dir_all(root.join("usr/machines/vps")).unwrap();
-    fs::write(root.join("usr/machines/vps/disko.nix"), "# custom disko").unwrap();
-    make_generate(&root).run("disko").unwrap();
-    let content = fs::read_to_string(root.join("usr/machines/vps/disko.nix")).unwrap();
-    assert_eq!(
-        content, "# custom disko",
-        "existing disko.nix must not be overwritten"
-    );
-}
-
-#[test]
-fn generate_disko_always_overwrites_generated_configuration() {
-    let (_dir, root) = setup_test_root();
-    // Pre-create generated-configuration.nix with stale content
-    fs::create_dir_all(root.join("usr/machines/vps")).unwrap();
-    // Also need disko.nix to exist (since we always read it)
-    fs::copy(
-        root.join("dnf/hosts/disko/simple.nix"),
-        root.join("usr/machines/vps/disko.nix"),
-    )
-    .unwrap();
+    // gw: no disko section in etc/config.yaml, but a frozen raid layout
+    fs::create_dir_all(root.join("usr/machines/gw/install")).unwrap();
     fs::write(
-        root.join("usr/machines/vps/generated-configuration.nix"),
-        "# stale content",
+        root.join("usr/machines/gw/install/disko.nix"),
+        "{ disko.devices.mdadm.md0.type = \"mdadm\"; }",
     )
     .unwrap();
-    make_generate(&root).run("disko").unwrap();
-    let content =
-        fs::read_to_string(root.join("usr/machines/vps/generated-configuration.nix")).unwrap();
+    make_generate(&root).run("machines").unwrap();
+    let content = read(&root, "var/generated/hosts/gw.nix");
+    assert!(content.contains("swraid"), "{content}");
+    assert!(!root.join("usr/machines/gw/configuration.nix").exists());
+}
+
+#[test]
+fn generate_machines_removes_unwritten_host_files() {
+    let (_dir, root) = setup_test_root();
+    fs::create_dir_all(root.join("var/generated/hosts")).unwrap();
+    for name in ["ghost.nix", "vps.nix", "README.md"] {
+        fs::write(root.join("var/generated/hosts").join(name), "# old").unwrap();
+    }
+    make_generate(&root).run("machines").unwrap();
     assert!(
-        !content.contains("stale"),
-        "generated-configuration.nix must be overwritten\n\nActual:\n{content}"
+        !root.join("var/generated/hosts/ghost.nix").exists(),
+        "orphan"
+    );
+    assert!(
+        !root.join("var/generated/hosts/vps.nix").exists(),
+        "empty body"
+    );
+    assert!(root.join("var/generated/hosts/ws.nix").exists());
+    assert!(
+        root.join("var/generated/hosts/README.md").exists(),
+        "non-nix kept"
     );
 }
 

@@ -8,7 +8,7 @@ use dnf_generator::nix_generator::nix_service::ServiceRegistry;
 /// CLI:
 ///   dnf-generator <command> [--workdir <path>] [--modules <path>] [--debug]
 ///
-/// `<command>` is one of `hosts`, `users`, `network`, `disko`, `doc`.
+/// `<command>` is one of `hosts`, `users`, `network`, `machines`, `doc`.
 /// `--workdir` defaults to the current working directory. The generator
 /// reads `<workdir>/etc/config.yaml` and writes `<workdir>/var/generated/*.nix`.
 /// `--modules` is the path to `modules.nix` (service topology flags);

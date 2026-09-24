@@ -6,13 +6,15 @@
 //! `nixfmt -sv`. The file content is purposely fully deterministic so diffs
 //! between runs reflect actual config changes only.
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
+use regex::Regex;
 
 use crate::error::{NixError, Result};
 use crate::nix_generator::configuration::Configuration;
-use crate::nix_generator::item::host::{DiskoConfig, Host, ServiceParams};
+use crate::nix_generator::item::host::{Host, ServiceParams};
 use crate::nix_generator::nix_builder::array_to_nix;
 use crate::nix_generator::nix_service::{NixService, ServiceRegistry};
 use crate::nix_generator::nix_zone::{NixZone, EXTERNAL_ZONE_KEY};
@@ -47,7 +49,7 @@ impl Generate {
             "hosts" => self.generate_hosts(),
             "users" => self.generate_users(),
             "network" => self.generate_network(),
-            "disko" => self.generate_disko(),
+            "machines" => self.generate_machines(),
             "doc" => self.generate_doc(),
             other => Err(NixError::generate(format!("Unknown command: {other}"))),
         }
@@ -498,46 +500,56 @@ impl Generate {
         entries
     }
 
-    // ─── disko ──────────────────────────────────────────────────────────────
+    // ─── machines ───────────────────────────────────────────────────────────
 
-    /// For each host with a disko profile, lay down (idempotently) the four
-    /// machine files under `usr/machines/<host>/`. Only `generated-configuration.nix`
-    /// is regenerated on every run; the rest are seeded once and then owned
-    /// by the user.
-    fn generate_disko(&self) -> Result<String> {
+    /// Lay down `usr/machines/<host>/` for hosts with a disko profile, then
+    /// write `var/generated/hosts/<host>.nix` for hosts with `install/disko.nix`.
+    ///
+    /// - `configuration.nix`: seeded once, then owned by the user.
+    /// - `install/disko.nix`: follows `etc/config.yaml` until the host is
+    ///   sealed by `install/state.nix` (`just install`), frozen afterwards.
+    /// - `var/generated/hosts/*.nix` not written by this run are removed.
+    fn generate_machines(&self) -> Result<String> {
         let template_src = self
             .project_root
-            .join("dnf/hosts/templates/usr-machines-default.nix");
+            .join("dnf/hosts/templates/usr-machines-configuration.nix");
+        let hosts_dir = self.project_root.join("var/generated/hosts");
+        let mut written = HashSet::new();
 
         for host in self.config.hosts.values() {
-            let Some(ref profile_path) = host.disko.profile else {
-                continue;
-            };
             let machine_dir = self.project_root.join("usr/machines").join(&host.hostname);
-            std::fs::create_dir_all(&machine_dir)?;
+            let install_dir = machine_dir.join("install");
+            let disko_dst = install_dir.join("disko.nix");
 
-            seed_if_missing(&machine_dir.join("default.nix"), || {
-                std::fs::copy(&template_src, machine_dir.join("default.nix")).map(|_| ())
-            })?;
-            seed_if_missing(&machine_dir.join("hardware-configuration.nix"), || {
-                std::fs::write(machine_dir.join("hardware-configuration.nix"), "{}")
-            })?;
-            seed_if_missing(&machine_dir.join("disko.nix"), || {
-                std::fs::copy(
-                    self.project_root.join(profile_path),
-                    machine_dir.join("disko.nix"),
-                )
-                .map(|_| ())
-            })?;
+            if let Some(ref profile_path) = host.disko.profile {
+                std::fs::create_dir_all(&install_dir)?;
+                seed_if_missing(&machine_dir.join("configuration.nix"), || {
+                    std::fs::copy(&template_src, machine_dir.join("configuration.nix")).map(|_| ())
+                })?;
 
-            // generated-configuration.nix: always (re)written from the host's
-            // disko config plus a few flags inferred from the disko file.
-            let disko_dst = machine_dir.join("disko.nix");
-            let disko_content = std::fs::read_to_string(&disko_dst)?;
-            let body = build_generated_conf_body(&host.disko, &disko_content);
-            let content = format!("{GEN_FILE_HEADER}{{lib,...}}:{{{body}}}");
-            write_and_format(&machine_dir.join("generated-configuration.nix"), &content)?;
+                // Sealed host: the disk was formatted with this file, only a
+                // deliberate deletion brings the profile back.
+                let sealed = install_dir.join("state.nix").exists();
+                if !sealed || !disko_dst.exists() {
+                    let profile = std::fs::read_to_string(self.project_root.join(profile_path))?;
+                    let content = build_install_disko(host, profile_path, &profile)?;
+                    write_and_format(&disko_dst, &content)?;
+                }
+            }
+
+            if !disko_dst.exists() {
+                continue;
+            }
+            let body = build_generated_conf_body(&std::fs::read_to_string(&disko_dst)?);
+            if body.is_empty() {
+                continue;
+            }
+            let target = hosts_dir.join(format!("{}.nix", host.hostname));
+            write_and_format(&target, &format!("{GEN_FILE_HEADER}{{lib,...}}:{{{body}}}"))?;
+            written.insert(target);
         }
+
+        remove_unwritten_nix_files(&hosts_dir, &written)?;
         Ok(String::new())
     }
 
@@ -765,14 +777,74 @@ fn build_service_attrs(svc: &NixService) -> NixAttrSet {
 
 // ─── disko helpers ──────────────────────────────────────────────────────────
 
-fn build_generated_conf_body(disko: &DiskoConfig, disko_content: &str) -> String {
-    let mut body = String::new();
+/// Token a disko profile puts in place of each disk path, replaced from
+/// `disko.devices` of `etc/config.yaml` when `install/disko.nix` is written.
+const RE_DEVICE_TOKEN: &str = r"@DEVICE:([^@\s]*)@";
 
-    for (name, device) in &disko.devices {
-        body.push_str(&format!(
-            "disko.devices.disk.{name}.device=lib.mkForce \"{device}\";"
-        ));
+/// `install/disko.nix`: provenance header, then the profile with every
+/// `@DEVICE:<disk>@` token replaced. Fail-closed: a default disk path could
+/// format the wrong drive, so tokens and declared devices must match exactly.
+fn build_install_disko(host: &Host, profile_path: &str, profile: &str) -> Result<String> {
+    let re = Regex::new(RE_DEVICE_TOKEN).expect("Invalid regex pattern");
+    let devices = &host.disko.devices;
+    let hostname = &host.hostname;
+
+    let tokens: BTreeSet<&str> = re
+        .captures_iter(profile)
+        .filter_map(|c| c.get(1).map(|m| m.as_str()))
+        .collect();
+    let missing: Vec<&str> = tokens
+        .iter()
+        .copied()
+        .filter(|t| !devices.contains_key(*t))
+        .collect();
+    if !missing.is_empty() {
+        return Err(NixError::validation(format!(
+            "Host '{hostname}': no disko device for disk(s) {} of {profile_path} (etc/config.yaml: disko.devices)",
+            missing.join(", ")
+        )));
     }
+    let mut unused: Vec<&str> = devices
+        .keys()
+        .map(String::as_str)
+        .filter(|d| !tokens.contains(d))
+        .collect();
+    unused.sort_unstable();
+    if !unused.is_empty() {
+        return Err(NixError::validation(format!(
+            "Host '{hostname}': disko device(s) {} have no @DEVICE:<disk>@ token in {profile_path}",
+            unused.join(", ")
+        )));
+    }
+
+    let layout = re.replace_all(profile, |caps: &regex::Captures| devices[&caps[1]].clone());
+    if layout.contains("@DEVICE:") {
+        return Err(NixError::validation(format!(
+            "Host '{hostname}': malformed @DEVICE:<disk>@ token left in {profile_path}"
+        )));
+    }
+
+    let mut pairs: Vec<String> = devices.iter().map(|(d, p)| format!("{d}={p}")).collect();
+    pairs.sort();
+    let origin = if pairs.is_empty() {
+        profile_path.to_string()
+    } else {
+        format!("{profile_path} ({})", pairs.join(", "))
+    };
+    Ok(format!(
+        "# Disk layout of {hostname}, frozen at install\n\
+         #\n\
+         # From {origin}.\n\
+         # Rewritten by 'just generate' until install/state.nix exists ('just install'),\n\
+         # then never: the disk was formatted with it.\n\n\
+         {layout}"
+    ))
+}
+
+/// Flags inferred from `install/disko.nix` that disko does not set itself.
+/// Empty when the layout needs none.
+fn build_generated_conf_body(disko_content: &str) -> String {
+    let mut body = String::new();
 
     if disko_content.contains("type = \"mdadm\";") {
         body.push_str("boot.swraid.enable = lib.mkForce true;");
@@ -793,6 +865,22 @@ fn build_generated_conf_body(disko: &DiskoConfig, disko_content: &str) -> String
     }
 
     body
+}
+
+/// Remove the `*.nix` files of `dir` this run did not write: host gone from
+/// `etc/config.yaml`, without `install/disko.nix`, or nothing left to force.
+fn remove_unwritten_nix_files(dir: &Path, written: &HashSet<PathBuf>) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let path = entry?.path();
+        let is_nix = path.extension().is_some_and(|ext| ext == "nix");
+        if is_nix && path.is_file() && !written.contains(&path) {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 fn seed_if_missing<F>(path: &Path, write: F) -> Result<()>

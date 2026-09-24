@@ -95,6 +95,7 @@ impl Host {
     }
 
     /// Resolve and validate disko config. Sets `disko.profile` to the relative path.
+    /// A consumer profile (`usr/hosts/disko/`) shadows the framework one of the same name.
     pub fn set_disko(
         &mut self,
         profile_name: Option<&str>,
@@ -106,13 +107,13 @@ impl Host {
         };
         assert_regex(RE_IDENTIFIER, profile, "Bad disko profile name")?;
 
-        let dnf_path = format!("dnf/hosts/disko/{profile}.nix");
         let usr_path = format!("usr/hosts/disko/{profile}.nix");
+        let dnf_path = format!("dnf/hosts/disko/{profile}.nix");
 
-        let resolved = if project_root.join(&dnf_path).exists() {
-            dnf_path
-        } else if project_root.join(&usr_path).exists() {
+        let resolved = if project_root.join(&usr_path).exists() {
             usr_path
+        } else if project_root.join(&dnf_path).exists() {
+            dnf_path
         } else {
             return Err(NixError::validation(format!(
                 "Unknown disko profile \"{profile}.nix\" (not in dnf/hosts/disko or usr/hosts/disko)"
@@ -176,6 +177,35 @@ mod tests {
             host.disko.profile.as_deref(),
             Some("dnf/hosts/disko/nvme.nix")
         );
+    }
+
+    #[test]
+    fn set_disko_usr_profile_shadows_dnf() {
+        let dir = tempdir().unwrap();
+        for side in ["dnf", "usr"] {
+            fs::create_dir_all(dir.path().join(side).join("hosts/disko")).unwrap();
+            fs::write(dir.path().join(side).join("hosts/disko/nvme.nix"), "{}").unwrap();
+        }
+        let mut host = Host::new("myhost");
+        host.set_disko(Some("nvme"), HashMap::new(), dir.path())
+            .unwrap();
+        assert_eq!(
+            host.disko.profile.as_deref(),
+            Some("usr/hosts/disko/nvme.nix")
+        );
+    }
+
+    #[test]
+    fn set_disko_by_id_device() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("dnf/hosts/disko")).unwrap();
+        fs::write(dir.path().join("dnf/hosts/disko/nvme.nix"), "{}").unwrap();
+        let devices = HashMap::from([(
+            "main".to_string(),
+            "/dev/disk/by-id/nvme-WD_BLACK_SN850X_8000GB_25252R800194".to_string(),
+        )]);
+        let mut host = Host::new("myhost");
+        assert!(host.set_disko(Some("nvme"), devices, dir.path()).is_ok());
     }
 
     #[test]

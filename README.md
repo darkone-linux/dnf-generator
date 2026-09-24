@@ -17,7 +17,7 @@ Reads `etc/config.yaml` and writes deterministic Nix files under
 | `hosts` | `var/generated/hosts.nix` | Host list with profiles, services, colmena tags |
 | `users` | `var/generated/users.nix` | User list with profiles and group memberships |
 | `network` | `var/generated/network.nix` | Network topology (zones, DNS, VPN) |
-| `disko` | per-host `disko.nix` | Disk partitioning declarations |
+| `machines` | `usr/machines/<host>/install/disko.nix`, `var/generated/hosts/<host>.nix` | Disk layout (profile + devices, frozen at install), boot flags it implies |
 | `doc` | MDX fragments | Module reference for the documentation site |
 
 ## Usage
