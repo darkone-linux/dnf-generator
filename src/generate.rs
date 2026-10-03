@@ -248,13 +248,9 @@ impl Generate {
             Box::new(NixList::from_strings(&zone.dhcp_range)),
         );
 
-        // address: /<zone.domain>/<gateway-lan-ip>
-        let mut address = NixList::new();
-        if let Some(gw_ip) = zone.gateway_lan_ip() {
-            address.add_string(format!("/{}/{}", zone.domain(), gw_ip));
-        }
-        settings.set("address", Box::new(address));
-
+        // No `address=/<zone.domain>/<gw>` wildcard: every declared name has its
+        // host-record, and an undeclared one must fail (NXDOMAIN) rather than
+        // land on the gateway — whose ssh port answers any probe.
         settings.set("server", Box::new(self.compute_dnsmasq_server(zone)));
         settings.set(
             "host-record",

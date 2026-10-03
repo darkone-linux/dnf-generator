@@ -847,13 +847,17 @@ fn generate_network_local_zone_dhcp_host() {
 }
 
 #[test]
-fn generate_network_local_zone_address() {
+fn generate_network_local_zone_no_wildcard() {
     let (_dir, root) = setup_test_root();
     let output = make_generate(&root).generate_network_raw().unwrap();
-    // address = /local.test.lan/10.9.1.1 (gw is the gateway)
+    // Undeclared names must not resolve: no catch-all onto the gateway.
     assert!(
-        output.contains("/local.test.lan/10.9.1.1"),
-        "Missing address entry"
+        !output.contains("/local.test.lan/10.9.1.1"),
+        "Unexpected zone wildcard address"
+    );
+    assert!(
+        !output.contains("address = "),
+        "Unexpected address setting"
     );
 }
 
