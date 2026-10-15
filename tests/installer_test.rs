@@ -22,6 +22,7 @@ fn plan() -> Plan {
         device_label: "512 GB EXAMPLE SSD".to_string(),
         disko_profile: "btrfs-1-disk".to_string(),
         locale: Some("fr_FR.UTF-8".to_string()),
+        keyboard: Some("fr".to_string()),
         timezone: Some("Europe/Paris".to_string()),
     }
 }
@@ -83,6 +84,7 @@ fn installer_config_without_locale_or_email() {
     let mut plan = plan();
     plan.email = None;
     plan.locale = None;
+    plan.keyboard = None;
     plan.timezone = None;
     let config = render_config(&plan);
     assert!(!config.contains("default:"), "{config}");

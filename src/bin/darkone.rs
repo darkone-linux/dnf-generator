@@ -1,13 +1,15 @@
 //! `darkone`: the DNF assistant. `darkone new` installs the first host of a
 //! network, its admin host, from the DNF installer image.
 
-use std::io::{BufRead, Write};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
 use dnf_generator::installer::answers::{Answers, Plan};
+use dnf_generator::installer::ask;
+use dnf_generator::installer::catalog::Catalog;
 use dnf_generator::installer::machine::Machine;
 use dnf_generator::installer::project::{self, log, Options, IP_PREFIX, ZONE};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
@@ -78,21 +80,24 @@ fn new(args: NewArgs) -> Result<()> {
                 .to_string(),
         );
     }
-    let answers = match &args.answers {
+    let mut answers = match &args.answers {
         Some(path) => Answers::load(path)?,
         None => Answers::default(),
     };
-
-    // Questions come with the interactive mode: until then, every answer
-    // missing from the file is an error, with or without `--non-interactive`.
-    let plan = Plan::resolve(&answers, &Machine::detect()).map_err(|errors| {
-        let hint = if args.non_interactive {
-            ""
-        } else {
-            "\n  (questions are not available yet: give every answer with --answers)"
-        };
+    let catalog = Catalog::load(&args.dnf_source)?;
+    let machine = Machine::detect();
+    if !args.non_interactive {
+        if !std::io::stdin().is_terminal() {
+            return Err(
+                "no terminal to ask on: give every answer with --answers --non-interactive"
+                    .to_string(),
+            );
+        }
+        ask::complete(&mut answers, &machine, &catalog)?;
+    }
+    let plan = Plan::resolve(&answers, &machine, &catalog).map_err(|errors| {
         format!(
-            "the answers do not allow an install:\n  - {}{hint}",
+            "the answers do not allow an install:\n  - {}",
             errors.join("\n  - ")
         )
     })?;
@@ -104,15 +109,20 @@ fn new(args: NewArgs) -> Result<()> {
         project: args.project,
         dnf_source: args.dnf_source,
     };
-    recap(&plan, &opts);
+    let recap = recap(&plan, &opts);
+    match (args.non_interactive, args.dry_run, args.yes) {
+        (false, true, _) => ask::show(&recap)?,
+        (false, false, false) => ask::confirm(&recap, &plan.device)?,
+        (true, false, false) => {
+            return Err("--non-interactive needs --yes: the disk will be erased".to_string())
+        }
+        _ => {
+            log("Plan:");
+            println!("    {}", recap.replace('\n', "\n    "));
+        }
+    }
     if args.dry_run {
         return Ok(());
-    }
-    if !args.yes {
-        if args.non_interactive {
-            return Err("--non-interactive needs --yes: the disk will be erased".to_string());
-        }
-        confirm(&plan)?;
     }
     project::create(&plan, &opts)?;
     project::install(&plan, &opts)?;
@@ -121,22 +131,19 @@ fn new(args: NewArgs) -> Result<()> {
 }
 
 /// Definitive choices are flagged: nothing changes them after the install (D5).
-fn recap(plan: &Plan, opts: &Options) {
+fn recap(plan: &Plan, opts: &Options) -> String {
     let email = plan
         .email
         .as_ref()
         .map(|e| format!(", {e}"))
         .unwrap_or_default();
-    let locale = match (&plan.locale, &plan.timezone) {
-        (None, None) => "framework defaults".to_string(),
-        (l, t) => [l.as_deref(), t.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    log("Plan:");
-    for (key, value) in [
+    let keyboard = plan.keyboard.as_ref().map(|k| format!("keyboard {k}"));
+    let locale = [plan.locale.clone(), keyboard, plan.timezone.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
+    [
         (
             "Admin",
             format!("{} ({}{email}), definitive login", plan.login, plan.name),
@@ -147,31 +154,22 @@ fn recap(plan: &Plan, opts: &Options) {
         (
             "Disk",
             format!(
-                "{} ({}), ERASED, layout {}",
+                "{} ({}), ERASED, layout {}, not encrypted",
                 plan.device, plan.device_label, plan.disko_profile
             ),
         ),
-        ("Locale", locale),
+        (
+            "Locale",
+            if locale.is_empty() {
+                "framework defaults".to_string()
+            } else {
+                locale
+            },
+        ),
         ("Framework", opts.dnf_url.clone().unwrap_or_default()),
-    ] {
-        println!("    {key:<10} {value}");
-    }
-}
-
-fn confirm(plan: &Plan) -> Result<()> {
-    print!(
-        "Erase {} and install {}? (y/N) ",
-        plan.device, plan.hostname
-    );
-    std::io::stdout().flush().ok();
-    let mut answer = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| e.to_string())?;
-    if answer.trim() == "y" {
-        Ok(())
-    } else {
-        Err("aborted, nothing changed".to_string())
-    }
+    ]
+    .iter()
+    .map(|(key, value)| format!("{key:<10} {value}"))
+    .collect::<Vec<_>>()
+    .join("\n")
 }

@@ -2,11 +2,15 @@
 //! the machine booted on the DNF installer image.
 //!
 //! - `answers`: the answers file and the plan resolved from it;
+//! - `ask`: the questions for what the answers file leaves out;
+//! - `catalog`: the locales and timezones the installer offers;
 //! - `machine`: what is detected instead of asked (firmware, battery, disks);
 //! - `project`: the project written in RAM, then installed by
 //!   `just install-here`, which moves it to /etc/nixos of the new system.
 
 pub mod answers;
+pub mod ask;
+pub mod catalog;
 pub mod machine;
 pub mod project;
 

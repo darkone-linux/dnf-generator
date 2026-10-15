@@ -9,19 +9,22 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
+use super::catalog::Catalog;
 use super::machine::{human_size, Machine};
 use super::Result;
-use crate::nix_generator::validation::{
-    RE_DEVICE, RE_FQDN, RE_HOSTNAME, RE_LOCALE, RE_LOGIN, RE_NAME, RE_TIMEZONE,
-};
+use crate::nix_generator::validation::{RE_DEVICE, RE_TIMEZONE};
+pub use crate::nix_generator::validation::{RE_FQDN, RE_HOSTNAME, RE_LOGIN, RE_NAME};
 
 /// Format of the answers file, migrated by `darkone upgrade` like `config.yaml`.
 pub const ANSWERS_VERSION: u32 = 1;
 
 /// Crypt hash (`mkpasswd`): yescrypt, sha-512, bcrypt. No quote, space or
 /// colon: the hash travels inside a single-quoted shell word.
-const RE_PASSWORD_HASH: &str = r"^\$[0-9a-z]+\$[./0-9A-Za-z$=,+-]+$";
-const RE_EMAIL: &str = r"^[^@\s]+@[^@\s]+\.[^@\s]+$";
+pub const RE_PASSWORD_HASH: &str = r"^\$[0-9a-z]+\$[./0-9A-Za-z$=,+-]+$";
+pub const RE_EMAIL: &str = r"^[^@\s]+@[^@\s]+\.[^@\s]+$";
+
+/// Logins of system accounts, never an admin's.
+pub const RESERVED_LOGINS: [&str; 2] = ["nix", "root"];
 
 /// Host profiles of a first workstation; a virtual machine stays a desktop.
 const WORKSTATION_PROFILES: [&str; 2] = ["laptop", "desktop"];
@@ -104,12 +107,19 @@ pub struct Plan {
     pub device_label: String,
     pub disko_profile: String,
     pub locale: Option<String>,
+
+    /// XKB layout of the locale, shown in the recap.
+    pub keyboard: Option<String>,
     pub timezone: Option<String>,
 }
 
 impl Plan {
     /// Every problem at once: a scripted install is fixed in a single pass.
-    pub fn resolve(answers: &Answers, machine: &Machine) -> std::result::Result<Plan, Vec<String>> {
+    pub fn resolve(
+        answers: &Answers,
+        machine: &Machine,
+        catalog: &Catalog,
+    ) -> std::result::Result<Plan, Vec<String>> {
         let mut errors = Vec::new();
         let mut check = |key: &str, value: &Option<String>, pattern: &str| match value {
             None => {
@@ -137,11 +147,6 @@ impl Plan {
             .email
             .as_ref()
             .map(|_| check("admin.email", &answers.admin.email, RE_EMAIL));
-        let locale = answers
-            .locale
-            .language
-            .as_ref()
-            .map(|_| check("locale.language", &answers.locale.language, RE_LOCALE));
         let timezone = answers
             .locale
             .timezone
@@ -155,20 +160,37 @@ impl Plan {
                 "version {v} is not supported, expected {ANSWERS_VERSION}"
             )),
         }
-        if ["nix", "root"].contains(&login.as_str()) {
+        if RESERVED_LOGINS.contains(&login.as_str()) {
             errors.push(format!("admin.login: '{login}' is a system account"));
         }
 
-        // The framework derives the console and desktop layout from the
-        // country of the locale (`modules/system/i18n.nix`).
-        if let (Some(keyboard), Some(language)) = (&answers.locale.keyboard, &locale) {
-            let country = language.get(3..5).unwrap_or_default().to_lowercase();
-            if *keyboard != country {
+        // Only what the framework knows the keyboard of (`config/locales.json`).
+        // No language: the framework defaults.
+        let entry = answers.locale.language.as_ref().and_then(|l| {
+            let entry = catalog.locale(l);
+            if entry.is_none() {
+                let offered: Vec<&str> =
+                    catalog.locales.iter().map(|e| e.locale.as_str()).collect();
                 errors.push(format!(
-                    "locale.keyboard: '{keyboard}' cannot be set apart, the layout follows the locale ({country})"
+                    "locale.language: '{l}' is not offered, one of {}",
+                    offered.join(", ")
                 ));
             }
+            entry
+        });
+        match (&answers.locale.keyboard, entry) {
+            (Some(k), Some(e)) if *k != e.xkb && *k != e.console => errors.push(format!(
+                "locale.keyboard: '{k}' cannot be set apart, the keyboard follows the locale ({})",
+                e.xkb
+            )),
+            (Some(_), None) if answers.locale.language.is_none() => errors
+                .push("locale.keyboard: give locale.language, the keyboard follows it".to_string()),
+            _ => {}
         }
+
+        // The main timezone of the country, unless the answers name one.
+        let timezone = timezone
+            .or_else(|| entry.and_then(|e| catalog.timezones(e.country()).into_iter().next()));
 
         let profile = match &answers.host.profile {
             None if machine.battery => "laptop".to_string(),
@@ -225,7 +247,8 @@ impl Plan {
                 .trim()
                 .to_string(),
             disko_profile: disko_profile.to_string(),
-            locale,
+            locale: entry.map(|e| e.locale.clone()),
+            keyboard: entry.map(|e| e.xkb.clone()),
             timezone,
         })
     }
@@ -266,6 +289,7 @@ fn pick_disk<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::catalog::tests::catalog;
     use super::super::machine::Disk as MachineDisk;
     use super::*;
 
@@ -315,12 +339,12 @@ backup:
     }
 
     fn errors(yaml: &str, machine: &Machine) -> Vec<String> {
-        Plan::resolve(&answers(yaml), machine).unwrap_err()
+        Plan::resolve(&answers(yaml), machine, &catalog()).unwrap_err()
     }
 
     #[test]
     fn contract_example_resolves() {
-        let plan = Plan::resolve(&answers(CONTRACT), &machine()).unwrap();
+        let plan = Plan::resolve(&answers(CONTRACT), &machine(), &catalog()).unwrap();
         assert_eq!(plan.login, "alice");
         assert_eq!(plan.email.as_deref(), Some("alice@example.org"));
         assert_eq!(plan.profile, "laptop");
@@ -338,7 +362,7 @@ backup:
         let mut m = machine();
         m.battery = true;
         m.uefi = false;
-        let plan = Plan::resolve(&answers(&yaml), &m).unwrap();
+        let plan = Plan::resolve(&answers(&yaml), &m, &catalog()).unwrap();
         assert_eq!(plan.profile, "laptop");
         assert_eq!(plan.device, "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001");
         assert_eq!(plan.disko_profile, "ext4-1-disk-legacy");
@@ -347,7 +371,7 @@ backup:
     #[test]
     fn kernel_name_selects_the_stable_path() {
         let yaml = CONTRACT.replace("/dev/disk/by-id/nvme-EXAMPLE_SSD_0001", "/dev/nvme0n1");
-        let plan = Plan::resolve(&answers(&yaml), &machine()).unwrap();
+        let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
         assert_eq!(plan.device, "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001");
     }
 
@@ -409,6 +433,32 @@ backup:
         assert!(errors(&yaml, &machine())
             .iter()
             .any(|e| e.contains("not an installable disk")));
+    }
+
+    #[test]
+    fn locale_brings_keyboard_and_main_timezone() {
+        let yaml = CONTRACT
+            .replace("fr_FR.UTF-8", "es_ES.UTF-8")
+            .replace("keyboard: \"fr\"", "keyboard: \"es\"")
+            .replace("  timezone: \"Europe/Paris\"\n", "");
+        let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
+        assert_eq!(plan.keyboard.as_deref(), Some("es"));
+        assert_eq!(plan.timezone.as_deref(), Some("Europe/Madrid"));
+
+        // The console name of the keyboard is accepted too: `uk` is `gb`.
+        let yaml = CONTRACT
+            .replace("fr_FR.UTF-8", "en_GB.UTF-8")
+            .replace("keyboard: \"fr\"", "keyboard: \"uk\"");
+        let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
+        assert_eq!(plan.keyboard.as_deref(), Some("gb"));
+    }
+
+    #[test]
+    fn locale_outside_the_framework_table_is_refused() {
+        let yaml = CONTRACT.replace("fr_FR.UTF-8", "ru_RU.UTF-8");
+        assert!(errors(&yaml, &machine())
+            .iter()
+            .any(|e| e.contains("'ru_RU.UTF-8' is not offered")));
     }
 
     #[test]

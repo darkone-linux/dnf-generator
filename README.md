@@ -40,17 +40,18 @@ QUIET=1 just generate    # from the arthur-network root
 
 Second binary of the crate: the DNF assistant. `darkone new` installs the
 machine booted on the DNF installer image as the first host of a new network,
-its admin host. It resolves an answers file (`--answers`) against what it
-detects (UEFI, Secure Boot, battery, disks), shows the plan, writes the project
-from the framework template, then runs `just install-here`.
+its admin host. It asks (cliclack) what the answers file (`--answers`) leaves
+out and the machine cannot tell (UEFI, Secure Boot, battery, disks), shows the
+plan, writes the project from the framework template, then runs
+`just install-here`. Locales and keyboards come from the framework
+(`config/locales.json`), timezones from tzdata (`zone.tab`).
 
 ```sh
-darkone new --answers answers.yaml [--non-interactive] [--yes] [--dry-run]
+darkone new [--answers answers.yaml] [--non-interactive] [--yes] [--dry-run]
 ```
 
 `--dry-run` shows the plan and runs anywhere; anything else requires the
-installer image (`/etc/dnf-installer`). Questions are not implemented yet: every
-answer comes from the file.
+installer image (`/etc/dnf-installer`).
 
 ## Development
 
@@ -73,6 +74,8 @@ src/
   generate.rs             Generate::run() dispatcher
   installer/
     answers.rs            Answers file, install plan and its checks
+    ask.rs                Questions for the missing answers (cliclack)
+    catalog.rs            Offered locales (framework) and timezones (tzdata)
     machine.rs            Detection: firmware, battery, install disks
     project.rs            Project from the template, config.yaml, install-here
   nix_generator/
