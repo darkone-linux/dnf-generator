@@ -11,7 +11,7 @@ use dnf_generator::installer::answers::{Answers, Plan};
 use dnf_generator::installer::ask;
 use dnf_generator::installer::catalog::Catalog;
 use dnf_generator::installer::machine::Machine;
-use dnf_generator::installer::project::{self, log, Options, IP_PREFIX, ZONE};
+use dnf_generator::installer::project::{self, log, Options, Passphrase, IP_PREFIX, ZONE};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
 
 #[derive(Parser)]
@@ -45,6 +45,11 @@ struct NewArgs {
     /// Show the plan and change nothing; runs on any machine.
     #[arg(long)]
     dry_run: bool,
+
+    /// Passphrase of an encrypted disk, never in the answers file, which
+    /// circulates. Without it, the passphrase is asked.
+    #[arg(long, value_name = "FILE")]
+    luks_passphrase_file: Option<PathBuf>,
 
     /// Where the project is written before it moves to /etc/nixos of the new
     /// system.
@@ -101,6 +106,19 @@ fn new(args: NewArgs) -> Result<()> {
             errors.join("\n  - ")
         )
     })?;
+
+    // Before the recap: everything is typed before the confirmation.
+    let luks = match (&args.luks_passphrase_file, plan.encrypt) {
+        (_, false) => None,
+        (Some(file), true) => Some(Passphrase::from_file(file, ask::MIN_PASSWORD)?),
+        (None, true) if args.non_interactive => {
+            return Err(
+                "disk.encrypt: give the disk passphrase with --luks-passphrase-file".to_string(),
+            )
+        }
+        (None, true) if args.dry_run => None,
+        (None, true) => Some(Passphrase::write(&ask::luks_passphrase()?)?),
+    };
     let opts = Options {
         dnf_url: Some(match args.dnf_url {
             Some(url) => url,
@@ -125,7 +143,7 @@ fn new(args: NewArgs) -> Result<()> {
         return Ok(());
     }
     project::create(&plan, &opts)?;
-    project::install(&plan, &opts)?;
+    project::install(&plan, &opts, luks.as_ref())?;
     log("Done: remove the installation media, then reboot.");
     Ok(())
 }
@@ -154,8 +172,15 @@ fn recap(plan: &Plan, opts: &Options) -> String {
         (
             "Disk",
             format!(
-                "{} ({}), ERASED, layout {}, not encrypted",
-                plan.device, plan.device_label, plan.disko_profile
+                "{} ({}), ERASED, layout {}, {}",
+                plan.device,
+                plan.device_label,
+                plan.disko_profile,
+                if plan.encrypt {
+                    "encrypted (passphrase at each boot)"
+                } else {
+                    "not encrypted"
+                }
             ),
         ),
         (

@@ -48,10 +48,13 @@ plan, writes the project from the framework template, then runs
 
 ```sh
 darkone new [--answers answers.yaml] [--non-interactive] [--yes] [--dry-run]
+            [--luks-passphrase-file FILE]
 ```
 
 `--dry-run` shows the plan and runs anywhere; anything else requires the
-installer image (`/etc/dnf-installer`).
+installer image (`/etc/dnf-installer`). An encrypted disk (`disk.encrypt`,
+UEFI only) takes its passphrase from `--luks-passphrase-file`, never from the
+answers file; without it, the passphrase is asked.
 
 ## Development
 

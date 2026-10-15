@@ -3,7 +3,8 @@
 //! of the new system.
 
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::io::Write as _;
+use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -204,7 +205,8 @@ pub fn create(plan: &Plan, opts: &Options) -> Result<()> {
 }
 
 /// Disks, keys, secrets and `nixos-install`: all in `just install-here`.
-pub fn install(plan: &Plan, opts: &Options) -> Result<()> {
+pub fn install(plan: &Plan, opts: &Options, luks: Option<&Passphrase>) -> Result<()> {
+    let luks = luks.map(|p| p.path.to_string_lossy().into_owned());
     run(
         &opts.project,
         "just",
@@ -214,8 +216,61 @@ pub fn install(plan: &Plan, opts: &Options) -> Result<()> {
             &plan.login,
             &plan.password_hash,
             "yes",
+            luks.as_deref().unwrap_or_default(),
         ],
     )
+}
+
+/// LUKS passphrase handed to `just install-here` as a file: the one given on
+/// the command line, or a typed one written in RAM and removed on drop.
+pub struct Passphrase {
+    pub path: PathBuf,
+    written: bool,
+}
+
+impl Passphrase {
+    /// Trailing newlines do not count, as for disko's `passwordFile`.
+    pub fn from_file(path: &Path, min_len: usize) -> Result<Self> {
+        let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if text.trim_end_matches('\n').chars().count() < min_len {
+            return Err(format!(
+                "{}: a LUKS passphrase of {min_len} characters at least",
+                path.display()
+            ));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            written: false,
+        })
+    }
+
+    /// Session tmpfs, readable by this user only.
+    pub fn write(passphrase: &str) -> Result<Self> {
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("dnf-luks-{}", std::process::id()));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| f.write_all(passphrase.as_bytes()))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Self {
+            path,
+            written: true,
+        })
+    }
+}
+
+impl Drop for Passphrase {
+    fn drop(&mut self) {
+        if self.written {
+            fs::remove_file(&self.path).ok();
+        }
+    }
 }
 
 const NIX_FEATURES: [&str; 2] = ["--extra-experimental-features", "nix-command flakes"];
@@ -301,6 +356,29 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("{ ... }: { }"), "{out}");
+    }
+
+    #[test]
+    fn passphrase_file_is_checked_and_a_written_one_removed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let short = dir.path().join("short");
+        fs::write(&short, "1234567\n").unwrap();
+        assert!(Passphrase::from_file(&short, 8).is_err());
+        assert!(Passphrase::from_file(&dir.path().join("none"), 8).is_err());
+        let given = dir.path().join("given");
+        fs::write(&given, "12345678\n").unwrap();
+        drop(Passphrase::from_file(&given, 8).unwrap());
+        assert!(given.exists());
+
+        let written = Passphrase::write("correct horse").unwrap();
+        let path = written.path.clone();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "correct horse");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(written);
+        assert!(!path.exists());
     }
 
     #[test]

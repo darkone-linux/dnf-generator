@@ -21,6 +21,7 @@ fn plan() -> Plan {
         device: "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001".to_string(),
         device_label: "512 GB EXAMPLE SSD".to_string(),
         disko_profile: "btrfs-1-disk".to_string(),
+        encrypt: false,
         locale: Some("fr_FR.UTF-8".to_string()),
         keyboard: Some("fr".to_string()),
         timezone: Some("Europe/Paris".to_string()),

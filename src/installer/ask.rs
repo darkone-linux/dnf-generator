@@ -15,7 +15,8 @@ use super::catalog::Catalog;
 use super::machine::{human_size, Machine};
 use super::Result;
 
-const MIN_PASSWORD: usize = 8;
+/// Account password and LUKS passphrase alike.
+pub const MIN_PASSWORD: usize = 8;
 
 /// Ctrl-C or Esc in a prompt.
 fn aborted(e: io::Error) -> String {
@@ -115,27 +116,7 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
         admin.email = (!email.is_empty()).then_some(email);
     }
     if admin.password_hash.is_none() {
-        let password = loop {
-            let first = cliclack::password("Your password")
-                .mask('*')
-                .validate(|v: &String| {
-                    if v.chars().count() >= MIN_PASSWORD {
-                        Ok(())
-                    } else {
-                        Err("8 characters at least")
-                    }
-                })
-                .interact()
-                .map_err(aborted)?;
-            let again = cliclack::password("Your password, again")
-                .mask('*')
-                .interact()
-                .map_err(aborted)?;
-            if first == again {
-                break first;
-            }
-            cliclack::log::error("The two passwords differ.").ok();
-        };
+        let password = typed_twice("Your password", "passwords")?;
         admin.password_hash = Some(hash_password(&password)?);
     }
 
@@ -182,9 +163,56 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
         answers.disk.device = Some(select.interact().map_err(aborted)?);
     }
 
-    // Encryption comes with the LUKS lot: not asked yet.
-    answers.disk.encrypt.get_or_insert(false);
+    // The only encrypted layout is a UEFI one: no question in BIOS mode.
+    if answers.disk.encrypt.is_none() && !machine.uefi {
+        cliclack::log::remark("BIOS mode: the disk cannot be encrypted.").ok();
+        answers.disk.encrypt = Some(false);
+    }
+    if answers.disk.encrypt.is_none() {
+        cliclack::note(
+            "Disk encryption",
+            "A passphrase opens the disk at each boot, typed with the keyboard\n\
+             chosen above. It also becomes the passphrase of the network: every\n\
+             encrypted host installed later uses it.",
+        )
+        .map_err(aborted)?;
+        let encrypt = cliclack::confirm("Encrypt the disk?")
+            .initial_value(true)
+            .interact()
+            .map_err(aborted)?;
+        answers.disk.encrypt = Some(encrypt);
+    }
     Ok(())
+}
+
+/// A typo here locks the disk for good.
+pub fn luks_passphrase() -> Result<String> {
+    typed_twice("Disk passphrase", "passphrases")
+}
+
+/// Masked, typed twice until both match.
+fn typed_twice(label: &str, plural: &str) -> Result<String> {
+    loop {
+        let first = cliclack::password(label)
+            .mask('*')
+            .validate(|v: &String| {
+                if v.chars().count() >= MIN_PASSWORD {
+                    Ok(())
+                } else {
+                    Err("8 characters at least")
+                }
+            })
+            .interact()
+            .map_err(aborted)?;
+        let again = cliclack::password(format!("{label}, again"))
+            .mask('*')
+            .interact()
+            .map_err(aborted)?;
+        if first == again {
+            return Ok(first);
+        }
+        cliclack::log::error(format!("The two {plural} differ.")).ok();
+    }
 }
 
 /// The plan of a dry run, which ends the session.

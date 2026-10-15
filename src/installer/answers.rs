@@ -106,6 +106,9 @@ pub struct Plan {
     pub device: String,
     pub device_label: String,
     pub disko_profile: String,
+
+    /// LUKS: a passphrase at each boot, the shared one of the fleet.
+    pub encrypt: bool,
     pub locale: Option<String>,
 
     /// XKB layout of the locale, shown in the recap.
@@ -205,14 +208,21 @@ impl Plan {
             }
         };
 
-        match answers.disk.encrypt {
-            None => errors.push("missing answer: disk.encrypt".to_string()),
-            Some(true) => errors.push(
-                "disk.encrypt: encryption is not available yet in the installer, set it to false"
-                    .to_string(),
-            ),
-            Some(false) => {}
-        }
+        // The only encrypted layout is a UEFI one (`luks-btrfs-1-disk`).
+        let encrypt = match answers.disk.encrypt {
+            None => {
+                errors.push("missing answer: disk.encrypt".to_string());
+                false
+            }
+            Some(true) if !machine.uefi => {
+                errors.push(
+                    "disk.encrypt: encryption needs a UEFI machine, this one boots in BIOS mode"
+                        .to_string(),
+                );
+                false
+            }
+            Some(encrypt) => encrypt,
+        };
         if machine.secure_boot {
             errors.push(
                 "Secure Boot is on: DNF does not sign its boot loader. Turn it off in the firmware settings."
@@ -224,10 +234,10 @@ impl Plan {
             errors.push(e);
             None
         });
-        let disko_profile = if machine.uefi {
-            "btrfs-1-disk"
-        } else {
-            "ext4-1-disk-legacy"
+        let disko_profile = match (machine.uefi, encrypt) {
+            (true, true) => "luks-btrfs-1-disk",
+            (true, false) => "btrfs-1-disk",
+            (false, _) => "ext4-1-disk-legacy",
         };
 
         if !errors.is_empty() {
@@ -247,6 +257,7 @@ impl Plan {
                 .trim()
                 .to_string(),
             disko_profile: disko_profile.to_string(),
+            encrypt,
             locale: entry.map(|e| e.locale.clone()),
             keyboard: entry.map(|e| e.xkb.clone()),
             timezone,
@@ -369,6 +380,20 @@ backup:
     }
 
     #[test]
+    fn encryption_selects_the_luks_layout_on_uefi_only() {
+        let yaml = CONTRACT.replace("encrypt: false", "encrypt: true");
+        let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
+        assert!(plan.encrypt);
+        assert_eq!(plan.disko_profile, "luks-btrfs-1-disk");
+
+        let mut bios = machine();
+        bios.uefi = false;
+        assert!(errors(&yaml, &bios)
+            .iter()
+            .any(|e| e.contains("encryption needs a UEFI machine")));
+    }
+
+    #[test]
     fn kernel_name_selects_the_stable_path() {
         let yaml = CONTRACT.replace("/dev/disk/by-id/nvme-EXAMPLE_SSD_0001", "/dev/nvme0n1");
         let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
@@ -402,7 +427,6 @@ backup:
             .replace("$y$j9T$", "clear text")
             .replace("example.org\"\nhost", "example\"\nhost")
             .replace("\"fr\"", "\"us\"")
-            .replace("encrypt: false", "encrypt: true")
             .replace("profile: \"laptop\"", "profile: \"server\"");
         let errs = errors(&yaml, &machine());
         for fragment in [
@@ -410,7 +434,6 @@ backup:
             "admin.passwordHash: invalid",
             "network.domain: invalid",
             "locale.keyboard",
-            "encryption is not available yet",
             "not a workstation profile",
         ] {
             assert!(
