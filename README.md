@@ -19,6 +19,7 @@ Reads `etc/config.yaml` and writes deterministic Nix files under
 | `network` | `var/generated/network.nix` | Network topology (zones, DNS, VPN) |
 | `machines` | `usr/machines/<host>/install/disko.nix`, `var/generated/hosts/<host>.nix` | Disk layout (profile + devices, frozen at install), boot flags it implies |
 | `doc` | MDX fragments | Module reference for the documentation site |
+| `schema` | stdout | JSON Schema of `etc/config.yaml` (editor completion and validation), no workdir needed |
 
 ## Usage
 
@@ -61,6 +62,7 @@ src/
     nix_network.rs        Network generation logic
     nix_service.rs        Service generation logic
     nix_zone.rs           Zone generation logic
+    schema.rs             Typed config.yaml schema, JSON Schema derivation
     validation.rs         Configuration validation
     yaml.rs               YAML loading helpers
     token/                Nix token types (attr set, list, value)

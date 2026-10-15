@@ -2,13 +2,15 @@ use std::path::PathBuf;
 
 use dnf_generator::generate::Generate;
 use dnf_generator::nix_generator::nix_service::ServiceRegistry;
+use dnf_generator::nix_generator::schema::json_schema;
 
 /// The generator bootstrap.
 ///
 /// CLI:
 ///   dnf-generator <command> [--workdir <path>] [--modules <path>] [--debug]
 ///
-/// `<command>` is one of `hosts`, `users`, `network`, `machines`, `doc`.
+/// `<command>` is one of `hosts`, `users`, `network`, `machines`, `doc`, or
+/// `schema` (JSON Schema of `config.yaml`, needs no workdir).
 /// `--workdir` defaults to the current working directory. The generator
 /// reads `<workdir>/etc/config.yaml` and writes `<workdir>/var/generated/*.nix`.
 /// `--modules` is the path to `modules.nix` (service topology flags);
@@ -42,6 +44,12 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    }
+
+    // Static: no config to read, so it works before the project exists.
+    if command.as_deref() == Some("schema") {
+        println!("{}", json_schema());
+        return;
     }
 
     let workdir = workdir.unwrap_or_else(|| {
