@@ -626,6 +626,24 @@ fn generate_network_structure() {
     assert!(output.contains("zones"), "Missing zones key");
 }
 
+// The framework reads `network.coordination.enable` unguarded: a config
+// without the block, or without `enable`, must still evaluate.
+#[test]
+fn generate_network_coordination_defaults_to_disabled() {
+    let block =
+        "  coordination:\n    enable: false\n    hostname: \"coord\"\n    domain: \"headscale\"\n";
+    let base = include_str!("fixtures/config.yaml");
+    assert!(base.contains(block), "fixture changed");
+    for replacement in ["", "  coordination:\n    hostname: \"coord\"\n"] {
+        let (_dir, root) = setup_test_root_with(&base.replacen(block, replacement, 1));
+        let output = make_generate(&root).generate_network_raw().unwrap();
+        assert!(
+            output.contains("coordination = { enable = false;"),
+            "coordination.enable not emitted for {replacement:?}:\n{output}"
+        );
+    }
+}
+
 #[test]
 fn generate_network_fleet_update_absent_by_default() {
     let (_dir, root) = setup_test_root();

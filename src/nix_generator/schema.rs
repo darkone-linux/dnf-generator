@@ -135,7 +135,7 @@ pub struct NetworkDefault {
 }
 
 /// Headscale coordination server.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Coordination {
     /// Use a coordination server. `false`: zones are only deployed locally.

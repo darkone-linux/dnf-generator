@@ -154,9 +154,13 @@ impl Generate {
         if let Some(d) = &cfg.default {
             outer.set("default", Box::new(build_network_default(d)));
         }
-        if let Some(c) = &cfg.coordination {
-            outer.set("coordination", Box::new(build_network_coordination(c)));
-        }
+        // Except `coordination`: the framework reads `coordination.enable`
+        // unguarded, so it is always emitted, `false` when left out.
+        let coordination = cfg.coordination.clone().unwrap_or_default();
+        outer.set(
+            "coordination",
+            Box::new(build_network_coordination(&coordination)),
+        );
         if let Some(s) = &cfg.smtp {
             outer.set("smtp", Box::new(build_network_smtp(s)));
         }
@@ -673,9 +677,7 @@ fn build_network_default(d: &NetworkDefault) -> NixAttrSet {
 
 fn build_network_coordination(c: &Coordination) -> NixAttrSet {
     let mut attrs = NixAttrSet::new();
-    if let Some(enable) = c.enable {
-        attrs.set_bool("enable", enable);
-    }
+    attrs.set_bool("enable", c.enable.unwrap_or(false));
     if let Some(hostname) = &c.hostname {
         attrs.set_string("hostname", hostname);
     }
