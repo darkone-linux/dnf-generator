@@ -1,0 +1,310 @@
+//! The project of the new network: copied from the framework template, written
+//! in RAM, then installed by `just install-here`, which moves it to /etc/nixos
+//! of the new system.
+
+use std::fs;
+use std::os::unix::fs::{symlink, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use regex::Regex;
+
+use super::answers::Plan;
+use super::Result;
+
+/// Fixed for good (D5), shown in the recap without a question.
+pub const ZONE: &str = "main";
+pub const IP_PREFIX: &str = "10.0";
+
+/// First uid of a declared account (`RE_UID` range of the generator).
+const ADMIN_UID: u32 = 1000;
+
+pub struct Options {
+    /// Where the project is written before it moves to the new system.
+    pub project: PathBuf,
+
+    /// Framework tree holding `templates/project`.
+    pub dnf_source: PathBuf,
+
+    /// Overrides the framework URL of the template, a release tag.
+    pub dnf_url: Option<String>,
+}
+
+/// JSON strings are YAML double-quoted scalars: any value, safely quoted.
+fn q(value: &str) -> String {
+    serde_json::to_string(value).expect("a string always serializes")
+}
+
+/// `etc/config.yaml` of the assistant contract (§ config.yaml minimal):
+/// zone and prefix by default, plain DHCP until a gateway exists.
+pub fn render_config(plan: &Plan) -> String {
+    let mut default = String::new();
+    if plan.locale.is_some() || plan.timezone.is_some() {
+        default.push_str("  default:\n");
+        if let Some(locale) = &plan.locale {
+            default.push_str(&format!("    locale: {}\n", q(locale)));
+        }
+        if let Some(tz) = &plan.timezone {
+            default.push_str(&format!("    timezone: {}\n", q(tz)));
+        }
+    }
+    let email = plan
+        .email
+        .as_ref()
+        .map(|e| format!("    email: {}\n", q(e)))
+        .unwrap_or_default();
+    format!(
+        r#"# yaml-language-server: $schema=../dnf/config/config.schema.json
+#
+# Written by the DNF installer. Every key is documented on hover.
+
+network:
+  domain: {domain}
+{default}  coordination:
+    enable: false
+
+zones:
+  {ZONE}:
+    description: "Main network"
+    ipPrefix: {prefix}
+
+users:
+  {login}:
+    uid: {ADMIN_UID}
+    name: {name}
+{email}    profile: "nix-admin"
+    groups: ["global"]
+
+hosts:
+  - hostname: {hostname}
+    name: "Admin workstation"
+    zone: {zone}
+    profile: {profile}
+    users: [{login_q}]
+    disko:
+      profile: {disko}
+      devices:
+        main: {device}
+"#,
+        domain = q(&plan.domain),
+        prefix = q(IP_PREFIX),
+        login = plan.login,
+        name = q(&plan.name),
+        hostname = q(&plan.hostname),
+        zone = q(ZONE),
+        profile = q(&plan.profile),
+        login_q = q(&plan.login),
+        disko = q(&plan.disko_profile),
+        device = q(&plan.device),
+    )
+}
+
+/// `usr/machines/<host>/configuration.nix` of the first host, the admin one:
+/// the header of the framework template, then what an admin host needs.
+pub fn render_host_config(template: &str) -> String {
+    let header: String = template
+        .lines()
+        .take_while(|l| l.starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    format!(
+        "{header}\n{{ ... }}:\n{{\n\n  \
+         # Admin host of the network: fleet tools (`just`, colmena, sops) and git\n  \
+         # access to /etc/nixos for the `nix` account (`profile.advanced`).\n  \
+         darkone.admin.nix.enable = true;\n  \
+         darkone.profile.advanced.enable = true;\n}}\n"
+    )
+}
+
+/// Framework URL the template pins: the release of this installer image.
+pub fn template_dnf_url(dnf_source: &Path) -> Result<String> {
+    let flake =
+        fs::read_to_string(dnf_source.join("templates/project/flake.nix")).map_err(|e| {
+            format!(
+                "framework template not found under {}: {e}",
+                dnf_source.display()
+            )
+        })?;
+    dnf_url_re()
+        .captures(&flake)
+        .map(|c| c[2].to_string())
+        .ok_or_else(|| "no `dnf.url` in the template flake.nix".to_string())
+}
+
+fn dnf_url_re() -> Regex {
+    Regex::new(r#"(?m)^(\s*dnf\.url = )"([^"]*)";"#).unwrap()
+}
+
+/// Template, configuration, framework link, generated files, first commit.
+pub fn create(plan: &Plan, opts: &Options) -> Result<()> {
+    let dir = &opts.project;
+    if dir.exists()
+        && fs::read_dir(dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(true)
+    {
+        return Err(format!(
+            "{} is not empty: remove it, or choose another place with --project",
+            dir.display()
+        ));
+    }
+    log("Project from the framework template...");
+    copy_tree(&opts.dnf_source.join("templates/project"), dir)?;
+    if let Some(url) = &opts.dnf_url {
+        let flake = dir.join("flake.nix");
+        let text = fs::read_to_string(&flake).map_err(|e| e.to_string())?;
+        let text = dnf_url_re().replace(&text, format!("${{1}}\"{url}\";"));
+        fs::write(&flake, text.as_ref()).map_err(|e| e.to_string())?;
+    }
+    fs::write(dir.join("etc/config.yaml"), render_config(plan)).map_err(|e| e.to_string())?;
+
+    // Written before `just generate`, which seeds this file only when missing.
+    let template = opts
+        .dnf_source
+        .join("hosts/templates/usr-machines-configuration.nix");
+    let template =
+        fs::read_to_string(&template).map_err(|e| format!("{}: {e}", template.display()))?;
+    let host_dir = dir.join("usr/machines").join(&plan.hostname);
+    fs::create_dir_all(&host_dir).map_err(|e| e.to_string())?;
+    fs::write(
+        host_dir.join("configuration.nix"),
+        render_host_config(&template),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let email = plan
+        .email
+        .clone()
+        .unwrap_or_else(|| format!("{}@{}", plan.login, plan.domain));
+    run(dir, "git", &["init", "-q"])?;
+    run(dir, "git", &["config", "user.name", &plan.name])?;
+    run(dir, "git", &["config", "user.email", &email])?;
+    run(dir, "git", &["add", "-A"])?;
+
+    // Locks the framework and links `dnf/` to the locked tree: what `just`
+    // imports and the generator reads.
+    log("Locking the framework...");
+    run(
+        dir,
+        "nix",
+        &[NIX_FEATURES[0], NIX_FEATURES[1], "run", ".#init"],
+    )?;
+    run(dir, "just", &["generate"])?;
+    run(dir, "git", &["add", "-A"])?;
+    run(
+        dir,
+        "git",
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "chore(new): project created by the DNF installer",
+        ],
+    )
+}
+
+/// Disks, keys, secrets and `nixos-install`: all in `just install-here`.
+pub fn install(plan: &Plan, opts: &Options) -> Result<()> {
+    run(
+        &opts.project,
+        "just",
+        &[
+            "install-here",
+            &plan.hostname,
+            &plan.login,
+            &plan.password_hash,
+            "yes",
+        ],
+    )
+}
+
+const NIX_FEATURES: [&str; 2] = ["--extra-experimental-features", "nix-command flakes"];
+
+fn run(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{program} {}` failed ({status})",
+            args.first().unwrap_or(&"")
+        ))
+    }
+}
+
+/// Store files are read-only: the copy becomes the user's, writable.
+fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    for entry in entries.flatten() {
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let meta = fs::symlink_metadata(&from).map_err(|e| e.to_string())?;
+        if meta.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if meta.file_type().is_symlink() {
+            symlink(fs::read_link(&from).map_err(|e| e.to_string())?, &to)
+                .map_err(|e| e.to_string())?;
+        } else {
+            fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+            let mode = if meta.permissions().mode() & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            };
+            fs::set_permissions(&to, fs::Permissions::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Same rendering as the `_log` recipe of `just/common/_helpers.just`.
+pub fn log(msg: &str) {
+    println!("[ \x1b[1;36mDNF\x1b[0m ] \x1b[1;35mNEW\x1b[0m • {msg}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dnf_url_is_replaced_in_place() {
+        let flake = "  inputs = {\n    dnf.url = \"github:o/r/v0.4.0\";\n  };\n";
+        let out = dnf_url_re().replace(flake, "${1}\"path:/nix/store/x-source\";");
+        assert_eq!(
+            out,
+            "  inputs = {\n    dnf.url = \"path:/nix/store/x-source\";\n  };\n"
+        );
+        assert_eq!(
+            &dnf_url_re().captures(flake).unwrap()[2],
+            "github:o/r/v0.4.0"
+        );
+    }
+
+    #[test]
+    fn host_config_keeps_the_template_header() {
+        let template =
+            "# Host specific configuration (writable)\n#\n# Never edit those.\n\n{ ... }: { }\n";
+        let out = render_host_config(template);
+        assert!(out.starts_with("# Host specific configuration (writable)\n#\n# Never edit those.\n\n{ ... }:\n{\n\n  # Admin host"), "{out}");
+        assert!(
+            out.contains("  darkone.admin.nix.enable = true;\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("  darkone.profile.advanced.enable = true;\n}\n"),
+            "{out}"
+        );
+        assert!(!out.contains("{ ... }: { }"), "{out}");
+    }
+
+    #[test]
+    fn quoting_survives_any_name() {
+        assert_eq!(q(r#"Zoé "Z" O'Neil"#), r#""Zoé \"Z\" O'Neil""#);
+    }
+}

@@ -8,6 +8,10 @@ description = "Darkone NixOS Framework - configuration generator"
 name = "dnf-generator"
 path = "src/main.rs"
 
+[[bin]]
+name = "darkone"
+path = "src/bin/darkone.rs"
+
 [lib]
 name = "dnf_generator"
 path = "src/lib.rs"
@@ -23,6 +27,7 @@ rowan = "0.15"
 indexmap = { version = "2", features = ["serde"] }
 schemars = { version = "1", features = ["indexmap2"] }
 serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
 tempfile = "3"
