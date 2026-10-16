@@ -228,8 +228,12 @@ pub fn backup_target() -> Result<String> {
             } else {
                 &t.label
             };
-            let hint = format!("{} {}, {}", human_size(t.size), t.model, t.fstype);
-            select = select.item(t.path.clone(), name, hint.trim());
+            let hint = [human_size(t.size), t.model.clone(), t.fstype.clone()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            select = select.item(t.path.clone(), name, hint);
         }
         select = select.item(String::new(), "Look again", "once a stick is plugged in");
         let path = select.interact().map_err(aborted)?;
