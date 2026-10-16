@@ -113,7 +113,9 @@ pub fn render_host_config(template: &str) -> String {
          # Admin host of the network: fleet tools (`just`, colmena, sops) and git\n  \
          # access to /etc/nixos for the `nix` account (`profile.advanced`).\n  \
          darkone.admin.nix.enable = true;\n  \
-         darkone.profile.advanced.enable = true;\n}}\n"
+         darkone.profile.advanced.enable = true;\n\n  \
+         # Next steps, in the browser at the first session.\n  \
+         darkone.admin.welcome.enable = true;\n}}\n"
     )
 }
 
@@ -221,7 +223,30 @@ pub fn install(plan: &Plan, opts: &Options, luks: Option<&Passphrase>) -> Result
     )
 }
 
-/// LUKS passphrase handed to `just install-here` as a file: the one given on
+/// Where `install` leaves the new system mounted, keys included.
+const TARGET_ROOT: &str = "/mnt";
+
+/// Encrypted backup of the admin keys and the project on a USB stick, or its
+/// check (`just backup-admin`, `just backup-check`).
+pub fn backup(opts: &Options, device: &str, passphrase: &Passphrase, check: bool) -> Result<()> {
+    let recipe = if check {
+        "backup-check"
+    } else {
+        "backup-admin"
+    };
+    run(
+        &opts.project,
+        "just",
+        &[
+            recipe,
+            device,
+            &passphrase.path.to_string_lossy(),
+            TARGET_ROOT,
+        ],
+    )
+}
+
+/// Passphrase handed to the recipes as a file (LUKS, backup): the one given on
 /// the command line, or a typed one written in RAM and removed on drop.
 pub struct Passphrase {
     pub path: PathBuf,
@@ -234,7 +259,7 @@ impl Passphrase {
         let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if text.trim_end_matches('\n').chars().count() < min_len {
             return Err(format!(
-                "{}: a LUKS passphrase of {min_len} characters at least",
+                "{}: a passphrase of {min_len} characters at least",
                 path.display()
             ));
         }
@@ -244,13 +269,13 @@ impl Passphrase {
         })
     }
 
-    /// Session tmpfs, readable by this user only.
-    pub fn write(passphrase: &str) -> Result<Self> {
+    /// Session tmpfs, readable by this user only; `name` tells it apart.
+    pub fn write(name: &str, passphrase: &str) -> Result<Self> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|d| d.is_dir())
             .unwrap_or_else(std::env::temp_dir);
-        let path = dir.join(format!("dnf-luks-{}", std::process::id()));
+        let path = dir.join(format!("dnf-{name}-{}", std::process::id()));
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -352,7 +377,11 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.ends_with("  darkone.profile.advanced.enable = true;\n}\n"),
+            out.contains("  darkone.profile.advanced.enable = true;\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("  darkone.admin.welcome.enable = true;\n}\n"),
             "{out}"
         );
         assert!(!out.contains("{ ... }: { }"), "{out}");
@@ -370,7 +399,7 @@ mod tests {
         drop(Passphrase::from_file(&given, 8).unwrap());
         assert!(given.exists());
 
-        let written = Passphrase::write("correct horse").unwrap();
+        let written = Passphrase::write("test", "correct horse").unwrap();
         let path = written.path.clone();
         assert_eq!(fs::read_to_string(&path).unwrap(), "correct horse");
         assert_eq!(

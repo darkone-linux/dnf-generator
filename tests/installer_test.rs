@@ -25,6 +25,7 @@ fn plan() -> Plan {
         locale: Some("fr_FR.UTF-8".to_string()),
         keyboard: Some("fr".to_string()),
         timezone: Some("Europe/Paris".to_string()),
+        backup_device: None,
     }
 }
 

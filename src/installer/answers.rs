@@ -78,10 +78,11 @@ pub struct Locale {
     pub timezone: Option<String>,
 }
 
-// The backup step (admin age key on removable media) is not implemented yet.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Backup {
+    /// Partition of the USB stick that receives the backup of the admin keys;
+    /// asked after the install when missing.
     pub device: Option<String>,
 }
 
@@ -114,6 +115,9 @@ pub struct Plan {
     /// XKB layout of the locale, shown in the recap.
     pub keyboard: Option<String>,
     pub timezone: Option<String>,
+
+    /// USB stick partition of the key backup; `None`: chosen after the install.
+    pub backup_device: Option<String>,
 }
 
 impl Plan {
@@ -155,6 +159,11 @@ impl Plan {
             .timezone
             .as_ref()
             .map(|_| check("locale.timezone", &answers.locale.timezone, RE_TIMEZONE));
+        let backup_device = answers
+            .backup
+            .device
+            .as_ref()
+            .map(|_| check("backup.device", &answers.backup.device, RE_DEVICE));
 
         match answers.version {
             None => errors.push(format!("missing answer: version ({ANSWERS_VERSION})")),
@@ -261,6 +270,7 @@ impl Plan {
             locale: entry.map(|e| e.locale.clone()),
             keyboard: entry.map(|e| e.xkb.clone()),
             timezone,
+            backup_device,
         })
     }
 }
@@ -363,6 +373,10 @@ backup:
         assert_eq!(plan.device_label, "512 GB EXAMPLE SSD");
         assert_eq!(plan.disko_profile, "btrfs-1-disk");
         assert_eq!(plan.locale.as_deref(), Some("fr_FR.UTF-8"));
+        assert_eq!(
+            plan.backup_device.as_deref(),
+            Some("/dev/disk/by-label/SECOURS")
+        );
     }
 
     #[test]
@@ -427,7 +441,8 @@ backup:
             .replace("$y$j9T$", "clear text")
             .replace("example.org\"\nhost", "example\"\nhost")
             .replace("\"fr\"", "\"us\"")
-            .replace("profile: \"laptop\"", "profile: \"server\"");
+            .replace("profile: \"laptop\"", "profile: \"server\"")
+            .replace("by-label/SECOURS", "by-label/MY STICK");
         let errs = errors(&yaml, &machine());
         for fragment in [
             "'nix' is a system account",
@@ -435,6 +450,7 @@ backup:
             "network.domain: invalid",
             "locale.keyboard",
             "not a workstation profile",
+            "backup.device: invalid",
         ] {
             assert!(
                 errs.iter().any(|e| e.contains(fragment)),

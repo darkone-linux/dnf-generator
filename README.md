@@ -43,18 +43,22 @@ machine booted on the DNF installer image as the first host of a new network,
 its admin host. It asks (cliclack) what the answers file (`--answers`) leaves
 out and the machine cannot tell (UEFI, Secure Boot, battery, disks), shows the
 plan, writes the project from the framework template, then runs
-`just install-here`. Locales and keyboards come from the framework
+`just install-here`, then `just backup-admin` and `just backup-check`: the
+admin keys and the project, encrypted, on a USB stick. Locales and keyboards come from the framework
 (`config/locales.json`), timezones from tzdata (`zone.tab`).
 
 ```sh
 darkone new [--answers answers.yaml] [--non-interactive] [--yes] [--dry-run]
-            [--luks-passphrase-file FILE]
+            [--luks-passphrase-file FILE] [--backup-passphrase-file FILE]
 ```
 
 `--dry-run` shows the plan and runs anywhere; anything else requires the
 installer image (`/etc/dnf-installer`). An encrypted disk (`disk.encrypt`,
 UEFI only) takes its passphrase from `--luks-passphrase-file`, never from the
-answers file; without it, the passphrase is asked.
+answers file; without it, the passphrase is asked. The same passphrase opens
+the backup; an unencrypted disk gives the backup its own, from
+`--backup-passphrase-file` or asked. `--non-interactive` requires
+`backup.device` and the passphrase files.
 
 ## Development
 

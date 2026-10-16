@@ -4,7 +4,10 @@
 
 use std::fs;
 use std::io::{self, Write as _};
+use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
 
 use regex::Regex;
 
@@ -12,10 +15,10 @@ use super::answers::{
     Answers, ANSWERS_VERSION, RESERVED_LOGINS, RE_EMAIL, RE_FQDN, RE_HOSTNAME, RE_LOGIN, RE_NAME,
 };
 use super::catalog::Catalog;
-use super::machine::{human_size, Machine};
+use super::machine::{backup_targets, human_size, Machine};
 use super::Result;
 
-/// Account password and LUKS passphrase alike.
+/// Account password, LUKS and backup passphrases alike.
 pub const MIN_PASSWORD: usize = 8;
 
 /// Ctrl-C or Esc in a prompt.
@@ -173,7 +176,8 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
             "Disk encryption",
             "A passphrase opens the disk at each boot, typed with the keyboard\n\
              chosen above. It also becomes the passphrase of the network: every\n\
-             encrypted host installed later uses it.",
+             encrypted host installed later uses it, and the backup of the\n\
+             admin keys opens with it.",
         )
         .map_err(aborted)?;
         let encrypt = cliclack::confirm("Encrypt the disk?")
@@ -188,6 +192,75 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
 /// A typo here locks the disk for good.
 pub fn luks_passphrase() -> Result<String> {
     typed_twice("Disk passphrase", "passphrases")
+}
+
+/// Unencrypted disk: the backup of the admin keys gets a passphrase of its own.
+pub fn backup_passphrase() -> Result<String> {
+    cliclack::note(
+        "Backup of the admin keys",
+        "After the install, the keys of the network and its project are\n\
+         written on a USB stick, encrypted with a passphrase.",
+    )
+    .map_err(aborted)?;
+    typed_twice("Backup passphrase", "passphrases")
+}
+
+/// Opens the backup step, after the install: no way around it, and the
+/// stick may be plugged in only now.
+pub fn backup_intro() -> Result<()> {
+    cliclack::intro("Backup of the admin keys").map_err(aborted)?;
+    cliclack::note(
+        "Why",
+        "Without it, a lost or broken disk loses every secret of the network\n\
+         for good. Plug in a USB stick: an encrypted file is written on it,\n\
+         nothing is erased. Keep it away from this machine.",
+    )
+    .map_err(aborted)
+}
+
+/// A filesystem of a USB stick, looked for again until one shows up.
+pub fn backup_target() -> Result<String> {
+    loop {
+        let mut select = cliclack::select("USB stick for the backup");
+        for t in backup_targets() {
+            let name = if t.label.is_empty() {
+                &t.path
+            } else {
+                &t.label
+            };
+            let hint = format!("{} {}, {}", human_size(t.size), t.model, t.fstype);
+            select = select.item(t.path.clone(), name, hint.trim());
+        }
+        select = select.item(String::new(), "Look again", "once a stick is plugged in");
+        let path = select.interact().map_err(aborted)?;
+        if !path.is_empty() {
+            return Ok(path);
+        }
+    }
+}
+
+/// Read back after a replug: the file is on the stick, and the stick works.
+pub fn replug(path: &str) -> Result<()> {
+    let spinner = cliclack::spinner();
+    spinner.start("Unplug the USB stick...");
+    while Path::new(path).exists() {
+        sleep(Duration::from_millis(300));
+    }
+    spinner.set_message("Plug it back in...");
+    while !Path::new(path).exists() {
+        sleep(Duration::from_millis(300));
+    }
+    spinner.stop("USB stick plugged back in");
+    Ok(())
+}
+
+/// A backup step failed: shown, then the stick is chosen again.
+pub fn backup_failed(error: &str) {
+    cliclack::log::error(format!("{error}\nTry again, or with another USB stick.")).ok();
+}
+
+pub fn backup_done() -> Result<()> {
+    cliclack::outro("Backup written and read back").map_err(aborted)
 }
 
 /// Masked, typed twice until both match.

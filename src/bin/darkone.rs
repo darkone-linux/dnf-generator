@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use dnf_generator::installer::answers::{Answers, Plan};
 use dnf_generator::installer::ask;
 use dnf_generator::installer::catalog::Catalog;
-use dnf_generator::installer::machine::Machine;
+use dnf_generator::installer::machine::{self, Machine};
 use dnf_generator::installer::project::{self, log, Options, Passphrase, IP_PREFIX, ZONE};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
 
@@ -50,6 +50,11 @@ struct NewArgs {
     /// circulates. Without it, the passphrase is asked.
     #[arg(long, value_name = "FILE")]
     luks_passphrase_file: Option<PathBuf>,
+
+    /// Passphrase of the backup of the admin keys, for an unencrypted disk; an
+    /// encrypted one opens its backup with the disk passphrase.
+    #[arg(long, value_name = "FILE")]
+    backup_passphrase_file: Option<PathBuf>,
 
     /// Where the project is written before it moves to /etc/nixos of the new
     /// system.
@@ -107,6 +112,17 @@ fn new(args: NewArgs) -> Result<()> {
         )
     })?;
 
+    // Checked before anything is typed or erased.
+    match &plan.backup_device {
+        Some(device) if !args.dry_run => check_backup_device(device, &plan.device)?,
+        None if args.non_interactive => {
+            return Err(
+                "missing answer: backup.device, the USB stick of the key backup".to_string(),
+            )
+        }
+        _ => {}
+    }
+
     // Before the recap: everything is typed before the confirmation.
     let luks = match (&args.luks_passphrase_file, plan.encrypt) {
         (_, false) => None,
@@ -117,7 +133,22 @@ fn new(args: NewArgs) -> Result<()> {
             )
         }
         (None, true) if args.dry_run => None,
-        (None, true) => Some(Passphrase::write(&ask::luks_passphrase()?)?),
+        (None, true) => Some(Passphrase::write("luks", &ask::luks_passphrase()?)?),
+    };
+    let backup_passphrase = match (&args.backup_passphrase_file, plan.encrypt) {
+        (Some(_), true) => return Err(
+            "--backup-passphrase-file: the disk passphrase opens the backup of an encrypted host"
+                .to_string(),
+        ),
+        (None, true) => None,
+        (Some(file), false) => Some(Passphrase::from_file(file, ask::MIN_PASSWORD)?),
+        (None, false) if args.non_interactive => {
+            return Err(
+                "give the passphrase of the key backup with --backup-passphrase-file".to_string(),
+            )
+        }
+        (None, false) if args.dry_run => None,
+        (None, false) => Some(Passphrase::write("backup", &ask::backup_passphrase()?)?),
     };
     let opts = Options {
         dnf_url: Some(match args.dnf_url {
@@ -144,8 +175,61 @@ fn new(args: NewArgs) -> Result<()> {
     }
     project::create(&plan, &opts)?;
     project::install(&plan, &opts, luks.as_ref())?;
-    log("Done: remove the installation media, then reboot.");
+    let passphrase = backup_passphrase
+        .as_ref()
+        .or(luks.as_ref())
+        .expect("asked or given above");
+    backup(&plan, &opts, passphrase, !args.non_interactive)?;
+    log("Done: keep the USB stick away from this machine, remove the installation media, then reboot.");
     Ok(())
+}
+
+/// The stick named by the answers, checked before the disk is erased.
+fn check_backup_device(device: &str, install_device: &str) -> Result<()> {
+    let disk = machine::disk_of(device)
+        .ok_or_else(|| format!("backup.device: {device} not found, plug the USB stick in"))?;
+    if machine::disk_of(install_device).as_deref() == Some(disk.as_str()) {
+        return Err(format!(
+            "backup.device: {device} lies on the disk the install erases"
+        ));
+    }
+    Ok(())
+}
+
+/// Written, then read back: the install is not over without a backup that
+/// opens. Interactive, a failure leads back to the choice of the stick.
+fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: bool) -> Result<()> {
+    let not_backed_up = |why: &str| {
+        format!(
+            "{why}: the system is installed but its keys are not backed up. Once \
+             booted: cd /etc/nixos && just backup-admin <device>"
+        )
+    };
+    if interactive {
+        ask::backup_intro().map_err(|_| not_backed_up("backup aborted"))?;
+    }
+    let mut given = plan.backup_device.clone();
+    loop {
+        let device = match given.take() {
+            Some(device) => device,
+            None => ask::backup_target().map_err(|_| not_backed_up("backup aborted"))?,
+        };
+        let done = project::backup(opts, &device, passphrase, false)
+            .and_then(|()| {
+                if interactive {
+                    ask::replug(&device)
+                } else {
+                    Ok(())
+                }
+            })
+            .and_then(|()| project::backup(opts, &device, passphrase, true));
+        match done {
+            Ok(()) if interactive => return ask::backup_done(),
+            Ok(()) => return Ok(()),
+            Err(e) if interactive => ask::backup_failed(&e),
+            Err(e) => return Err(not_backed_up(&e)),
+        }
+    }
 }
 
 /// Definitive choices are flagged: nothing changes them after the install (D5).
@@ -190,6 +274,16 @@ fn recap(plan: &Plan, opts: &Options) -> String {
             } else {
                 locale
             },
+        ),
+        (
+            "Backup",
+            format!(
+                "admin keys and project, encrypted, {}",
+                match &plan.backup_device {
+                    Some(device) => format!("on {device}"),
+                    None => "on a USB stick chosen after the install".to_string(),
+                }
+            ),
         ),
         ("Framework", opts.dnf_url.clone().unwrap_or_default()),
     ]
