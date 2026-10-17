@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.3.0] - 2026-10-17
+
+### Added
+
+- **schema**: JSON Schema of config.yaml via dnf-generator schema
+- **installer**: Darkone new, first admin host from an answers file
+- **installer**: Darkone new asks what the answers file leaves out
+- **installer**: Darkone new encrypts the disk, passphrase asked or from file
+- **installer**: Darkone new backs up the admin keys on a USB stick
+
+### Fixed
+
+- **network**: Always emit coordination.enable, false when left out
+- **installer**: USB stick hint without a stray comma when its model is empty
+- **build**: Cargo run picks dnf-generator again, not ambiguous with darkone
+
 ## [0.2.1] - 2026-10-05
 
 ### Fixed
@@ -69,7 +85,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.0...v0.1.1
