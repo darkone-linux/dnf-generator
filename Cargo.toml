@@ -4,6 +4,10 @@ version = "0.2.1"
 edition = "2021"
 description = "Darkone NixOS Framework - configuration generator"
 
+# `cargo run` without `--bin` (just generate, doc codegen): the generator, not
+# the `darkone` installer.
+default-run = "dnf-generator"
+
 [[bin]]
 name = "dnf-generator"
 path = "src/main.rs"
