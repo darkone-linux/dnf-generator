@@ -179,7 +179,9 @@ pub fn create(plan: &Plan, opts: &Options) -> Result<()> {
         .email
         .clone()
         .unwrap_or_else(|| format!("{}@{}", plan.login, plan.domain));
-    run(dir, "git", &["init", "-q"])?;
+
+    // The installer image has no `init.defaultBranch`: `master` otherwise.
+    run(dir, "git", &["init", "-q", "-b", "main"])?;
     run(dir, "git", &["config", "user.name", &plan.name])?;
     run(dir, "git", &["config", "user.email", &email])?;
     run(dir, "git", &["add", "-A"])?;
