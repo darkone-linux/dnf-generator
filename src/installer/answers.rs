@@ -23,6 +23,13 @@ pub const ANSWERS_VERSION: u32 = 1;
 pub const RE_PASSWORD_HASH: &str = r"^\$[0-9a-z]+\$[./0-9A-Za-z$=,+-]+$";
 pub const RE_EMAIL: &str = r"^[^@\s]+@[^@\s]+\.[^@\s]+$";
 
+/// A Nix store URL; no quote or space, it travels inside a single-quoted
+/// shell word like the password hash.
+pub const RE_CACHE_URL: &str = r"^(https?|s3|ssh|ssh-ng|file)://[^\s'\x22]+$";
+
+/// `name:base64`, as `nix key convert-secret-to-public` prints it.
+pub const RE_CACHE_KEY: &str = r"^[A-Za-z0-9._-]+:[A-Za-z0-9+/]+={0,2}$";
+
 /// Logins of system accounts, never an admin's.
 pub const RESERVED_LOGINS: [&str; 2] = ["nix", "root"];
 
@@ -39,6 +46,7 @@ pub struct Answers {
     pub disk: Disk,
     pub locale: Locale,
     pub backup: Backup,
+    pub cache: Cache,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -86,6 +94,17 @@ pub struct Backup {
     pub device: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Cache {
+    /// Binary cache beside cache.nixos.org, for the install only: the new
+    /// system does not keep it.
+    pub url: Option<String>,
+
+    /// Not needed for paths already signed by cache.nixos.org.
+    pub public_key: Option<String>,
+}
+
 impl Answers {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
@@ -118,6 +137,10 @@ pub struct Plan {
 
     /// USB stick partition of the key backup; `None`: chosen after the install.
     pub backup_device: Option<String>,
+
+    /// Extra binary cache of the install, and its public key.
+    pub cache: Option<String>,
+    pub cache_key: Option<String>,
 }
 
 impl Plan {
@@ -164,6 +187,19 @@ impl Plan {
             .device
             .as_ref()
             .map(|_| check("backup.device", &answers.backup.device, RE_DEVICE));
+        let cache = answers
+            .cache
+            .url
+            .as_ref()
+            .map(|_| check("cache.url", &answers.cache.url, RE_CACHE_URL));
+        let cache_key = answers
+            .cache
+            .public_key
+            .as_ref()
+            .map(|_| check("cache.publicKey", &answers.cache.public_key, RE_CACHE_KEY));
+        if cache.is_none() && cache_key.is_some() {
+            errors.push("cache.publicKey: give cache.url, the key goes with it".to_string());
+        }
 
         match answers.version {
             None => errors.push(format!("missing answer: version ({ANSWERS_VERSION})")),
@@ -271,6 +307,8 @@ impl Plan {
             keyboard: entry.map(|e| e.xkb.clone()),
             timezone,
             backup_device,
+            cache,
+            cache_key,
         })
     }
 }
@@ -335,6 +373,9 @@ locale:
   timezone: "Europe/Paris"
 backup:
   device: "/dev/disk/by-label/SECOURS"
+cache:
+  url: "http://10.0.2.2:5000"
+  publicKey: "try-cache:dGhpcyBpcyBub3QgYSByZWFsIGtleSwgYW4gZXhhbXBsZQ=="
 "#;
 
     fn disk(name: &str, path: &str) -> MachineDisk {
@@ -377,6 +418,34 @@ backup:
             plan.backup_device.as_deref(),
             Some("/dev/disk/by-label/SECOURS")
         );
+        assert_eq!(plan.cache.as_deref(), Some("http://10.0.2.2:5000"));
+        assert!(plan.cache_key.is_some());
+    }
+
+    #[test]
+    fn cache_is_optional_and_checked() {
+        let yaml = CONTRACT.split("cache:\n").next().unwrap().to_string();
+        let plan = Plan::resolve(&answers(&yaml), &machine(), &catalog()).unwrap();
+        assert_eq!((plan.cache, plan.cache_key), (None, None));
+
+        let yaml = CONTRACT
+            .replace("http://10.0.2.2:5000", "http://cache.lan:5000 --option x")
+            .replace("try-cache:", "no key");
+        let errs = errors(&yaml, &machine());
+        assert!(
+            errs.iter().any(|e| e.starts_with("cache.url: invalid")),
+            "{errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("cache.publicKey: invalid")),
+            "{errs:?}"
+        );
+
+        let yaml = CONTRACT.replace("  url: \"http://10.0.2.2:5000\"\n", "");
+        assert!(errors(&yaml, &machine())
+            .iter()
+            .any(|e| e.contains("give cache.url")));
     }
 
     #[test]

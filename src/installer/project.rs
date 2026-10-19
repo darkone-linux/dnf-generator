@@ -238,6 +238,8 @@ pub fn install(plan: &Plan, opts: &Options, luks: Option<&Passphrase>) -> Result
             &plan.password_hash,
             "yes",
             luks.as_deref().unwrap_or_default(),
+            plan.cache.as_deref().unwrap_or_default(),
+            plan.cache_key.as_deref().unwrap_or_default(),
         ],
     )
 }

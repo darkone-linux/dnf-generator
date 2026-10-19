@@ -294,6 +294,13 @@ fn recap(plan: &Plan, opts: &Options) -> String {
                 }
             ),
         ),
+        (
+            "Cache",
+            match &plan.cache {
+                Some(url) => format!("{url}, for the install only"),
+                None => "cache.nixos.org".to_string(),
+            },
+        ),
         ("Framework", opts.dnf_url.clone().unwrap_or_default()),
     ]
     .iter()

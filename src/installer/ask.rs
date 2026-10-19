@@ -12,7 +12,8 @@ use std::time::Duration;
 use regex::Regex;
 
 use super::answers::{
-    Answers, ANSWERS_VERSION, RESERVED_LOGINS, RE_EMAIL, RE_FQDN, RE_HOSTNAME, RE_LOGIN, RE_NAME,
+    Answers, ANSWERS_VERSION, RESERVED_LOGINS, RE_CACHE_KEY, RE_CACHE_URL, RE_EMAIL, RE_FQDN,
+    RE_HOSTNAME, RE_LOGIN, RE_NAME,
 };
 use super::catalog::Catalog;
 use super::machine::{backup_targets, human_size, Machine};
@@ -186,7 +187,49 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
             .map_err(aborted)?;
         answers.disk.encrypt = Some(encrypt);
     }
+
+    // The whole system is downloaded, ~5 GB: a cache of the LAN, or the store
+    // of the host of a VM, spares it.
+    if answers.cache.url.is_none() {
+        answers.cache.url = optional(
+            "Extra package cache for the install (optional)",
+            "empty: cache.nixos.org only",
+            RE_CACHE_URL,
+            "a cache URL, like http://cache.lan:5000, or nothing",
+        )?;
+    }
+    if answers.cache.url.is_some() && answers.cache.public_key.is_none() {
+        answers.cache.public_key = optional(
+            "Its public key (optional if signed by cache.nixos.org)",
+            "name:base64",
+            RE_CACHE_KEY,
+            "name:base64, as nix key convert-secret-to-public prints it, or nothing",
+        )?;
+    }
     Ok(())
+}
+
+/// An empty answer is `None`.
+fn optional(
+    label: &str,
+    placeholder: &str,
+    pattern: &str,
+    message: &'static str,
+) -> Result<Option<String>> {
+    let re = Regex::new(pattern).unwrap();
+    let value: String = cliclack::input(label)
+        .placeholder(placeholder)
+        .required(false)
+        .validate(move |v: &String| {
+            if v.is_empty() || re.is_match(v) {
+                Ok(())
+            } else {
+                Err(message)
+            }
+        })
+        .interact()
+        .map_err(aborted)?;
+    Ok((!value.is_empty()).then_some(value))
 }
 
 /// A typo here locks the disk for good.
