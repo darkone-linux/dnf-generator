@@ -258,6 +258,9 @@ impl Configuration {
         }
         self.populate_zones()?;
 
+        // Every host and alias is known from here on.
+        self.network.assert_service_domains_free()?;
+
         // Before roaming: a fixed address caught in the dynamic pool is a
         // declaration error, and the roaming allocator would only pile more
         // reservations on top of it.

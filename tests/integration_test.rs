@@ -953,6 +953,30 @@ fn generate_network_host_records_lead_the_ptr() {
     );
 }
 
+// Same name on the host and on a proxied service: dnsmasq would answer both
+// addresses in turn. Refused at load.
+#[test]
+fn generate_network_rejects_service_domain_reusing_a_host() {
+    let base = include_str!("fixtures/config.yaml");
+    assert!(base.contains("      restic:\n"), "fixture changed");
+    let yaml = base.replacen(
+        "      restic:\n",
+        "      restic:\n        domain: \"gw\"\n",
+        1,
+    );
+    let (_dir, root) = setup_test_root_with(&yaml);
+    let registry = ServiceRegistry::from_nix(include_str!("fixtures/modules.nix")).unwrap();
+    let err = Generate::new(
+        &root.join("etc/config.yaml"),
+        &root.join("var/generated/config.yaml"),
+        registry,
+    )
+    .err()
+    .expect("a service domain reusing a host name must be refused")
+    .to_string();
+    assert!(err.contains("ws:restic"), "{err}");
+}
+
 #[test]
 fn generate_network_local_zone_headscale_ip() {
     let (_dir, root) = setup_test_root();

@@ -98,6 +98,33 @@ impl NixNetwork {
         missing
     }
 
+    /// Reject a service domain that reuses a host or alias name.
+    ///
+    /// Every zone resolves the short name of every host: dnsmasq would answer
+    /// both addresses in turn, `ssh <host>` landing on the reverse proxy.
+    pub fn assert_service_domains_free(&self) -> Result<()> {
+        let names: HashSet<&str> = self
+            .zones
+            .values()
+            .flat_map(|zone| {
+                zone.hosts()
+                    .keys()
+                    .chain(zone.aliases().values().flatten())
+                    .map(String::as_str)
+            })
+            .collect();
+        for svc in self.services.values() {
+            let label = svc.domain_label();
+            if names.contains(label) {
+                return Err(NixError::validation(format!(
+                    "Service {}:{} domain \"{label}\" is already a host or alias name, set another `domain`",
+                    svc.host, svc.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Register all services declared on a host.
     /// `hostname`: the host registering the services
     /// `zone`: the host's zone name
@@ -446,5 +473,45 @@ mod tests {
             .is_ok());
         let svc = net.services().values().next().unwrap();
         assert!(svc.global);
+    }
+
+    /// Zone `lab` with hosts `box` and `srv` (alias `files`), `srv` serving
+    /// `openclaw` under `domain`.
+    fn net_with_service_domain(domain: &str) -> NixNetwork {
+        let mut net = NixNetwork::default();
+        let mut zone = NixZone::new("lab");
+        zone.register_host("box", Some("10.0.1.40"), false).unwrap();
+        zone.register_host("srv", Some("10.0.1.2"), false).unwrap();
+        zone.register_aliases("srv", &["files".to_string()])
+            .unwrap();
+        net.add_zone(zone);
+        let (name, mut params) = make_service("openclaw", false);
+        params.domain = Some(domain.to_string());
+        let services: IndexMap<_, _> = [(name, params)].into_iter().collect();
+        net.register_services("srv", "lab", &services).unwrap();
+        net
+    }
+
+    #[test]
+    fn service_domain_reusing_a_host_name_fails() {
+        let err = net_with_service_domain("box")
+            .assert_service_domains_free()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("srv:openclaw"), "{err}");
+    }
+
+    #[test]
+    fn service_domain_reusing_an_alias_fails() {
+        assert!(net_with_service_domain("files")
+            .assert_service_domains_free()
+            .is_err());
+    }
+
+    #[test]
+    fn service_domain_of_its_own_ok() {
+        assert!(net_with_service_domain("alice")
+            .assert_service_domains_free()
+            .is_ok());
     }
 }
