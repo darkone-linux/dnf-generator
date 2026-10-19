@@ -930,6 +930,29 @@ fn generate_network_local_zone_host_records_services() {
     );
 }
 
+/// Records of the first `host-record` list of `output`, in emitted order.
+fn host_records(output: &str) -> Vec<&str> {
+    let start = output.find("host-record").expect("no host-record list");
+    let block = &output[start..];
+    let block = &block[..block.find("];").expect("unterminated host-record list")];
+    block.split('"').skip(1).step_by(2).collect()
+}
+
+// dnsmasq answers a PTR with the first name of the address's first record:
+// the gateway host leads, FQDN first, ahead of the services it proxies.
+#[test]
+fn generate_network_host_records_lead_the_ptr() {
+    let (_dir, root) = setup_test_root();
+    let output = make_generate(&root).generate_network_raw().unwrap();
+    let records = host_records(&output);
+    let first = records.iter().find(|r| r.ends_with(",10.9.1.1"));
+    assert_eq!(first, Some(&"gw.local.test.lan,gw,10.9.1.1"), "{records:?}");
+    assert!(
+        records.contains(&"adguardhome,adguardhome.local.test.lan,10.9.1.1"),
+        "{records:?}"
+    );
+}
+
 #[test]
 fn generate_network_local_zone_headscale_ip() {
     let (_dir, root) = setup_test_root();
@@ -1028,11 +1051,11 @@ fn common_zone_is_not_declared_as_a_zone() {
 fn common_extra_hosts_land_in_every_zone() {
     let output = common_zone_network();
     assert!(
-        output.contains("phone,phone.lab.test.lan,10.9.5.1"),
+        output.contains("phone.lab.test.lan,phone,10.9.5.1"),
         "the shared phone must exist in the lab zone.\n\nActual output:\n{output}"
     );
     assert!(
-        output.contains("phone,phone.home.test.lan,10.8.5.1"),
+        output.contains("phone.home.test.lan,phone,10.8.5.1"),
         "the shared phone must exist in the home zone.\n\nActual output:\n{output}"
     );
 }
@@ -1041,11 +1064,11 @@ fn common_extra_hosts_land_in_every_zone() {
 fn zone_extra_hosts_win_over_common_ones() {
     let output = common_zone_network();
     assert!(
-        output.contains("printer,printer.lab.test.lan,10.9.5.10"),
+        output.contains("printer.lab.test.lan,printer,10.9.5.10"),
         "the lab printer keeps its own suffix.\n\nActual output:\n{output}"
     );
     assert!(
-        output.contains("printer,printer.home.test.lan,10.8.5.99"),
+        output.contains("printer.home.test.lan,printer,10.8.5.99"),
         "the home printer keeps its own suffix.\n\nActual output:\n{output}"
     );
 }
@@ -1467,7 +1490,7 @@ fn roaming_adds_a_fqdn_record_under_the_visited_zone_only() {
 
     // ...while the short name keeps pointing at its home address.
     assert!(
-        alpha.contains(r#""gw-beta,gw-beta.beta.test.lan,10.8.1.1""#),
+        alpha.contains(r#""gw-beta.beta.test.lan,gw-beta,10.8.1.1""#),
         "the home record must stay untouched:\n{alpha}"
     );
 }

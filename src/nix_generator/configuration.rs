@@ -44,7 +44,8 @@ pub struct Configuration {
     pub users: IndexMap<String, User>,
     pub hosts: IndexMap<String, Host>,
     pub network: NixNetwork,
-    /// Static host DNS records: `"hostname,hostname.zonedomain,ip"`
+    /// Static host DNS records: `"hostname.zonedomain,hostname,ip"`, FQDN
+    /// first: dnsmasq answers the PTR with the first name.
     pub host_records: Vec<String>,
 }
 
@@ -511,7 +512,7 @@ impl Configuration {
     fn register_host_record(&mut self, hostname: &str, zone_domain: &str, ip: &str) {
         if !ip.is_empty() {
             self.host_records
-                .push(format!("{hostname},{hostname}.{zone_domain},{ip}"));
+                .push(format!("{hostname}.{zone_domain},{hostname},{ip}"));
         }
     }
 }

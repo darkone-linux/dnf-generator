@@ -302,10 +302,15 @@ impl Generate {
     /// 4. aliases of the external (`www`) zone replicated using LOCAL IPs,
     /// 5. residual hosts from `zone.hosts()` not yet emitted (extraHosts etc.),
     /// 6. roaming hosts, under this zone's domain only,
-    /// 7. final lexicographic sort.
+    /// 7. host records (1, 5, 6) sorted, then the others (2–4) sorted.
+    ///
+    /// dnsmasq answers an address's PTR with the first name of its first
+    /// record: hosts lead, FQDN first, so a gateway reads back as itself,
+    /// never as one of the services it proxies.
     fn compute_host_records(&self, zone: &NixZone) -> Vec<String> {
         let network_domain = &self.config.network.config.domain;
-        let mut entries: Vec<String> = self.config.host_records.clone();
+        let mut hosts: Vec<String> = self.config.host_records.clone();
+        let mut entries: Vec<String> = vec![];
 
         // Step 2 — services
         for svc in self.config.network.services_as_vec() {
@@ -373,11 +378,12 @@ impl Generate {
             }
         }
 
-        // Step 5 — residual hosts (de-duplicated against the shortname — the
-        // first comma-separated field — of already-emitted records).
-        let already: std::collections::HashSet<String> = entries
+        // Step 5 — residual hosts, de-duplicated against every name already
+        // emitted (all fields but the trailing address).
+        let already: std::collections::HashSet<&str> = hosts
             .iter()
-            .filter_map(|e| e.split(',').next().map(str::to_string))
+            .chain(&entries)
+            .flat_map(|e| e.rsplit_once(',').map_or("", |(names, _)| names).split(','))
             .collect();
         let mut residual: Vec<(&String, &String)> = zone
             .hosts()
@@ -387,18 +393,20 @@ impl Generate {
             .collect();
         residual.sort_by(|a, b| a.0.cmp(b.0));
         for (host, ip) in residual {
-            entries.push(format!("{host},{host}.{},{ip}", zone.domain()));
+            hosts.push(format!("{host}.{},{host},{ip}", zone.domain()));
         }
 
         // Step 6 — roaming hosts. Fully-qualified under the visited zone only:
         // the short name keeps pointing at the host's home address, so adding
         // these records never shadows an existing one.
         for (host, (_, ip)) in zone.roaming() {
-            entries.push(format!("{host}.{},{ip}", zone.domain()));
+            hosts.push(format!("{host}.{},{ip}", zone.domain()));
         }
 
+        hosts.sort();
         entries.sort();
-        entries
+        hosts.extend(entries);
+        hosts
     }
 
     /// `tls-builder-hosts`: non-global LAN services whose TLS cert is built on
