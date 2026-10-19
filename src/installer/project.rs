@@ -12,6 +12,7 @@ use regex::Regex;
 
 use super::answers::Plan;
 use super::Result;
+use crate::nix_generator::nix_network::DEFAULT_LOCALE;
 
 /// Fixed for good (D5), shown in the recap without a question.
 pub const ZONE: &str = "main";
@@ -153,6 +154,7 @@ pub fn create(plan: &Plan, opts: &Options) -> Result<()> {
     }
     log("Project from the framework template...");
     copy_tree(&opts.dnf_source.join("templates/project"), dir)?;
+    keep_readme(dir, plan.locale.as_deref().unwrap_or(DEFAULT_LOCALE))?;
     if let Some(url) = &opts.dnf_url {
         let flake = dir.join("flake.nix");
         let text = fs::read_to_string(&flake).map_err(|e| e.to_string())?;
@@ -206,6 +208,21 @@ pub fn create(plan: &Plan, opts: &Options) -> Result<()> {
             "chore(new): project created by the DNF installer",
         ],
     )
+}
+
+/// One README, in the language of the admin: the template has an English
+/// `README.md` and a French `README.fr.md`.
+fn keep_readme(dir: &Path, locale: &str) -> Result<()> {
+    let french = dir.join("README.fr.md");
+    if !french.exists() {
+        return Ok(());
+    }
+    let done = if locale.starts_with("fr_") {
+        fs::rename(&french, dir.join("README.md"))
+    } else {
+        fs::remove_file(&french)
+    };
+    done.map_err(|e| format!("{}: {e}", french.display()))
 }
 
 /// Disks, keys, secrets and `nixos-install`: all in `just install-here`.
@@ -366,6 +383,21 @@ mod tests {
             &dnf_url_re().captures(flake).unwrap()[2],
             "github:o/r/v0.4.0"
         );
+    }
+
+    #[test]
+    fn readme_in_the_language_of_the_admin() {
+        for (locale, expected) in [("fr_FR.UTF-8", "fr"), ("en_US.UTF-8", "en")] {
+            let dir = tempfile::TempDir::new().unwrap();
+            fs::write(dir.path().join("README.md"), "en").unwrap();
+            fs::write(dir.path().join("README.fr.md"), "fr").unwrap();
+            keep_readme(dir.path(), locale).unwrap();
+            assert_eq!(
+                fs::read_to_string(dir.path().join("README.md")).unwrap(),
+                expected
+            );
+            assert!(!dir.path().join("README.fr.md").exists());
+        }
     }
 
     #[test]

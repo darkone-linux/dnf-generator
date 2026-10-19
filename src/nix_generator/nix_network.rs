@@ -15,7 +15,7 @@ use crate::nix_generator::validation::{
 };
 
 const DEFAULT_DOMAIN: &str = "darkone.lan";
-const DEFAULT_LOCALE: &str = "fr_FR.UTF-8";
+pub const DEFAULT_LOCALE: &str = "fr_FR.UTF-8";
 const DEFAULT_TIMEZONE: &str = "Europe/Paris";
 const DEFAULT_COORDINATION_DOMAIN: &str = "headscale";
 
