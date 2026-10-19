@@ -179,8 +179,13 @@ fn new(args: NewArgs) -> Result<()> {
         .as_ref()
         .or(luks.as_ref())
         .expect("asked or given above");
-    backup(&plan, &opts, passphrase, !args.non_interactive)?;
-    log("Done: keep the USB stick away from this machine, remove the installation media, then reboot.");
+    if backup(&plan, &opts, passphrase, !args.non_interactive)? {
+        log("Done: keep the USB stick away from this machine, remove the installation media, then reboot.");
+    } else {
+        log(&format!(
+            "Done, keys NOT backed up: {BACKUP_LATER}. Remove the installation media, then reboot."
+        ));
+    }
     Ok(())
 }
 
@@ -196,14 +201,15 @@ fn check_backup_device(device: &str, install_device: &str) -> Result<()> {
     Ok(())
 }
 
+/// How a skipped or failed backup is done from the installed system.
+const BACKUP_LATER: &str = "once booted, cd /etc/nixos && just backup-admin <device>";
+
 /// Written, then read back: the install is not over without a backup that
-/// opens. Interactive, a failure leads back to the choice of the stick.
-fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: bool) -> Result<()> {
+/// opens. Interactive, a failure leads back to the choice of the stick, which
+/// may skip it: `false`.
+fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: bool) -> Result<bool> {
     let not_backed_up = |why: &str| {
-        format!(
-            "{why}: the system is installed but its keys are not backed up. Once \
-             booted: cd /etc/nixos && just backup-admin <device>"
-        )
+        format!("{why}: the system is installed but its keys are not backed up; {BACKUP_LATER}")
     };
     if interactive {
         ask::backup_intro().map_err(|_| not_backed_up("backup aborted"))?;
@@ -212,7 +218,10 @@ fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: boo
     loop {
         let device = match given.take() {
             Some(device) => device,
-            None => ask::backup_target().map_err(|_| not_backed_up("backup aborted"))?,
+            None => match ask::backup_target().map_err(|_| not_backed_up("backup aborted"))? {
+                Some(device) => device,
+                None => return Ok(false),
+            },
         };
         let done = project::backup(opts, &device, passphrase, false)
             .and_then(|()| {
@@ -224,8 +233,8 @@ fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: boo
             })
             .and_then(|()| project::backup(opts, &device, passphrase, true));
         match done {
-            Ok(()) if interactive => return ask::backup_done(),
-            Ok(()) => return Ok(()),
+            Ok(()) if interactive => return ask::backup_done().map(|()| true),
+            Ok(()) => return Ok(true),
             Err(e) if interactive => ask::backup_failed(&e),
             Err(e) => return Err(not_backed_up(&e)),
         }

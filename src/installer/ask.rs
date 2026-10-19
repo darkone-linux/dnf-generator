@@ -218,8 +218,17 @@ pub fn backup_intro() -> Result<()> {
     .map_err(aborted)
 }
 
-/// A filesystem of a USB stick, looked for again until one shows up.
-pub fn backup_target() -> Result<String> {
+/// An entry of the stick choice.
+#[derive(Clone, PartialEq, Eq)]
+enum Pick {
+    Stick(String),
+    Again,
+    Skip,
+}
+
+/// A filesystem of a USB stick, looked for again until one shows up. `None`:
+/// skipped at the admin's own risk, where no stick can be plugged (a VM).
+pub fn backup_target() -> Result<Option<String>> {
     loop {
         let mut select = cliclack::select("USB stick for the backup");
         for t in backup_targets() {
@@ -233,12 +242,27 @@ pub fn backup_target() -> Result<String> {
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
                 .join(", ");
-            select = select.item(t.path.clone(), name, hint);
+            select = select.item(Pick::Stick(t.path.clone()), name, hint);
         }
-        select = select.item(String::new(), "Look again", "once a stick is plugged in");
-        let path = select.interact().map_err(aborted)?;
-        if !path.is_empty() {
-            return Ok(path);
+        select = select
+            .item(Pick::Again, "Look again", "once a stick is plugged in")
+            .item(Pick::Skip, "Skip for now", "at your own risk");
+        match select.interact().map_err(aborted)? {
+            Pick::Stick(path) => return Ok(Some(path)),
+            Pick::Again => {}
+            Pick::Skip => {
+                let skip = cliclack::confirm(
+                    "Skip the backup? Until it is done, a lost or broken disk loses \
+                     every key of the network.",
+                )
+                .initial_value(false)
+                .interact()
+                .map_err(aborted)?;
+                if skip {
+                    cliclack::outro_cancel("Backup skipped").map_err(aborted)?;
+                    return Ok(None);
+                }
+            }
         }
     }
 }
