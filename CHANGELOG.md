@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.3.1] - 2026-10-19
+
+### Added
+
+- **installer**: Backup step can be skipped at the admin's own risk
+- **installer**: Project README in the language of the admin
+- **installer**: Optional extra package cache for the install
+- **installer**: DNF_URL and DNF_CACHE defaults, cache question reworded
+
+### Fixed
+
+- **installer**: Project repository on branch main, not master
+
 ## [0.3.0] - 2026-10-17
 
 ### Added
@@ -85,7 +98,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.1.1...v0.2.0
