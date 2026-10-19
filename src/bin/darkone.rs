@@ -67,8 +67,12 @@ struct NewArgs {
 
     /// Framework flake URL of the project. Default: the template's, the release
     /// of this installer image.
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "URL", env = "DNF_URL")]
     dnf_url: Option<String>,
+
+    /// Extra package cache of the install, unless the answers file gives one.
+    #[arg(long, value_name = "URL", env = "DNF_CACHE")]
+    cache: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -94,6 +98,11 @@ fn new(args: NewArgs) -> Result<()> {
         Some(path) => Answers::load(path)?,
         None => Answers::default(),
     };
+
+    // `DNF_CACHE` of the `just try` image: an answer, its question skipped.
+    if answers.cache.url.is_none() {
+        answers.cache.url = args.cache;
+    }
     let catalog = Catalog::load(&args.dnf_source)?;
     let machine = Machine::detect();
     if !args.non_interactive {

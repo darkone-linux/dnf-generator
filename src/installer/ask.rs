@@ -188,23 +188,23 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
         answers.disk.encrypt = Some(encrypt);
     }
 
-    // The whole system is downloaded, ~5 GB: a cache of the LAN, or the store
-    // of the host of a VM, spares it.
+    // The whole system is downloaded, ~5 GB: a cache of the LAN spares it. A
+    // given URL comes with its key, or none: no question after it.
     if answers.cache.url.is_none() {
         answers.cache.url = optional(
-            "Extra package cache for the install (optional)",
-            "empty: cache.nixos.org only",
+            "Package cache on your network (optional, Enter to skip)",
+            "http://cache.lan:5000",
             RE_CACHE_URL,
             "a cache URL, like http://cache.lan:5000, or nothing",
         )?;
-    }
-    if answers.cache.url.is_some() && answers.cache.public_key.is_none() {
-        answers.cache.public_key = optional(
-            "Its public key (optional if signed by cache.nixos.org)",
-            "name:base64",
-            RE_CACHE_KEY,
-            "name:base64, as nix key convert-secret-to-public prints it, or nothing",
-        )?;
+        if answers.cache.url.is_some() && answers.cache.public_key.is_none() {
+            answers.cache.public_key = optional(
+                "Its public key (optional if signed by cache.nixos.org)",
+                "name:base64",
+                RE_CACHE_KEY,
+                "name:base64, as nix key convert-secret-to-public prints it, or nothing",
+            )?;
+        }
     }
     Ok(())
 }
