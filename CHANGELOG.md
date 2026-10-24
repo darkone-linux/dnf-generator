@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.3.2] - 2026-10-24
+
+### Added
+
+- **services**: Reject a domain reusing a host or alias name
+
+### Fixed
+
+- **dns**: Host records lead, FQDN first, so a PTR answers the host itself
+
 ## [0.3.1] - 2026-10-19
 
 ### Added
@@ -98,7 +108,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.0...v0.2.1
