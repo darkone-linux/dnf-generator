@@ -1,7 +1,6 @@
 //! Answers of `darkone new`, and the install plan resolved from them.
 //!
-//! The answers file is the contract of `.specs/dnf/projet-procedure-demarrage-dnf.md`
-//! (§ Fichier de réponses): a key it gives skips its question. What a machine
+//! A key the answers file gives skips its question. What a machine
 //! tells by itself (firmware, battery, single disk) is detected, not asked.
 
 use std::path::Path;
