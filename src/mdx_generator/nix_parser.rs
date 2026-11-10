@@ -74,7 +74,7 @@ fn strip_comment_marker(raw: &str) -> String {
     out
 }
 
-/// "dnf/modules/standard/service/foo.nix" with prefix "darkone." → "darkone.service.foo".
+/// "dnf/modules/service/foo.nix" with prefix "darkone." → "darkone.service.foo".
 pub fn extract_module_path(file: &Path, base: &Path, prefix: &str) -> String {
     let rel = file.strip_prefix(base).unwrap_or(file);
     let without_ext = rel.with_extension("");
@@ -773,8 +773,8 @@ mod tests {
 
     #[test]
     fn module_path_dnf_layout() {
-        let base = Path::new("/repo/dnf/modules/standard");
-        let file = Path::new("/repo/dnf/modules/standard/service/adguardhome.nix");
+        let base = Path::new("/repo/dnf/modules");
+        let file = Path::new("/repo/dnf/modules/service/adguardhome.nix");
         let path = extract_module_path(file, base, "darkone.");
         assert_eq!(path, "darkone.service.adguardhome");
     }
