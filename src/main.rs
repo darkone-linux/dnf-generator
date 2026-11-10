@@ -14,8 +14,8 @@ use dnf_generator::nix_generator::schema::json_schema;
 /// `--workdir` defaults to the current working directory. The generator
 /// reads `<workdir>/etc/config.yaml` and writes `<workdir>/var/generated/*.nix`.
 /// `--modules` is the path to `modules.nix` (service topology flags);
-/// defaults to `<workdir>/dnf/config/modules.nix`. A missing file is treated
-/// as an empty registry (all flags use defaults: reverseProxy=true).
+/// defaults to `<workdir>/dnf/config/modules.nix`. A missing or non-literal
+/// registry is an error: default flags would generate another network.
 fn main() {
     let mut workdir: Option<PathBuf> = None;
     let mut registry_path: Option<PathBuf> = None;
