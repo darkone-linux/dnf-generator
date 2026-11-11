@@ -112,15 +112,25 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parse a module source and return the flat, ordered list of declared options.
-/// Submodule contents appear right after their parent with `level + 1`.
-pub fn parse_module_options(source: &str) -> Vec<NixOption> {
+/// The options a module source declares.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleOptions {
+    /// Dotted path shared by every option (`darkone.service.docs`): where they
+    /// are declared, which a sub-module's file path does not tell.
+    pub namespace: String,
+    /// Flat, ordered list; submodule contents follow their parent with
+    /// `level + 1`.
+    pub options: Vec<NixOption>,
+}
+
+/// Parse a module source: its declared options and their namespace.
+pub fn parse_module(source: &str) -> ModuleOptions {
     let parsed = rnix::Root::parse(source);
     let Some(expr) = parsed.tree().expr() else {
-        return vec![];
+        return ModuleOptions::default();
     };
     let Expr::AttrSet(body) = innermost_body(expr) else {
-        return vec![];
+        return ModuleOptions::default();
     };
 
     // Recursively collect (full_dotted_path, value) for every option declaration,
@@ -129,22 +139,28 @@ pub fn parse_module_options(source: &str) -> Vec<NixOption> {
     collect_options_leaves(&body, &mut leaves);
 
     if leaves.is_empty() {
-        return vec![];
+        return ModuleOptions::default();
     }
 
     // Determine the module namespace prefix common to all leaves
     // (e.g. "darkone.service.docs"), then strip it to get option-relative names.
-    let prefix = common_leaf_prefix(&leaves);
+    let namespace = common_leaf_prefix(&leaves);
 
-    let mut out = vec![];
+    let mut options = vec![];
     for (path, value) in &leaves {
-        let name = strip_prefix(path, &prefix);
+        let name = strip_prefix(path, &namespace);
         if name.is_empty() {
             continue;
         }
-        collect_option(&mut out, &name, 1, value);
+        collect_option(&mut options, &name, 1, value);
     }
-    out
+    ModuleOptions { namespace, options }
+}
+
+/// Declared options alone (see [`parse_module`]).
+#[cfg(test)]
+pub fn parse_module_options(source: &str) -> Vec<NixOption> {
+    parse_module(source).options
 }
 
 /// Recursively traverses `attrset`, descending into nested attrsets (namespace
@@ -621,6 +637,23 @@ mod tests {
         assert_eq!(opts[1].default.as_deref(), Some("\"127.0.0.1\""));
         assert_eq!(opts[2].name, "s3Port");
         assert_eq!(opts[3].name, "s3Bucket");
+    }
+
+    #[test]
+    fn namespace_is_where_options_are_declared() {
+        let src = r#"
+{ lib, ... }: {
+  options.darkone.host.gateway.linkCheck = {
+    interval = lib.mkOption { type = lib.types.int; default = 10; };
+    failAfter = lib.mkOption { type = lib.types.int; default = 3; };
+  };
+}
+"#;
+        let declared = parse_module(src);
+        assert_eq!(declared.namespace, "darkone.host.gateway.linkCheck");
+        assert_eq!(declared.options.len(), 2);
+        assert_eq!(declared.options[0].name, "interval");
+        assert!(parse_module("{ ... }: { }").options.is_empty());
     }
 
     #[test]
