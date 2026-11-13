@@ -44,6 +44,95 @@ pub fn intro() -> Result<()> {
     cliclack::intro("Darkone NixOS Framework: a new network").map_err(aborted)
 }
 
+/// Keyboard of the chosen locale on this console: the passphrases typed next
+/// must come out as on the installed system.
+pub fn use_keyboard(answers: &Answers, catalog: &Catalog) {
+    let entry = answers
+        .locale
+        .language
+        .as_deref()
+        .and_then(|l| catalog.locale(l));
+    if let Some(entry) = entry {
+        if load_console_keymap(&entry.console) {
+            cliclack::log::remark(format!("Keyboard of this console: {}", entry.xkb)).ok();
+        }
+    }
+}
+
+/// What to do with the project of an earlier run, left at the project path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviousRun {
+    Resume,
+    Scratch,
+    Abort,
+}
+
+/// Resume, only when nothing known stands against it; no choice that erases
+/// is preselected. The caller acts on `Abort`.
+pub fn previous_run(dir: &Path, blocker: Option<&str>) -> Result<PreviousRun> {
+    cliclack::log::warning(format!(
+        "A previous install did not finish, its project is in {}.",
+        dir.display()
+    ))
+    .ok();
+    let mut select = cliclack::select("Previous install");
+    match blocker {
+        None => {
+            select = select.item(
+                PreviousRun::Resume,
+                "Resume",
+                "same answers, project and disk; nothing erased",
+            )
+        }
+        Some(why) => {
+            cliclack::log::remark(format!("It cannot be resumed: {why}.")).ok();
+        }
+    }
+    select = select
+        .item(
+            PreviousRun::Scratch,
+            "Start from scratch",
+            "its project removed, the disk erased after the recap",
+        )
+        .item(PreviousRun::Abort, "Abort", "change nothing")
+        .initial_value(if blocker.is_none() {
+            PreviousRun::Resume
+        } else {
+            PreviousRun::Abort
+        });
+    select.interact().map_err(aborted)
+}
+
+/// The answers kept by an earlier run, offered back when nothing else gives
+/// them: yes skips every question.
+pub fn reuse_answers(saved: &Answers) -> Result<bool> {
+    let who = [
+        saved.admin.login.as_deref(),
+        saved.host.hostname.as_deref(),
+        saved.network.domain.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(", ");
+    cliclack::confirm(format!("Resume the answers of the previous run ({who})?"))
+        .initial_value(true)
+        .interact()
+        .map_err(aborted)
+}
+
+/// Never kept: typed again, checked by the recipe against the first one.
+pub fn luks_passphrase_again() -> Result<String> {
+    cliclack::log::remark("Type the disk passphrase of the first attempt again.").ok();
+    luks_passphrase()
+}
+
+/// The plan of a resume: the choice of the previous run was the confirmation.
+pub fn resuming(recap: &str) -> Result<()> {
+    cliclack::note("Plan", recap).map_err(aborted)?;
+    cliclack::outro("Resuming the install...").map_err(aborted)
+}
+
 pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> Result<()> {
     answers.version.get_or_insert(ANSWERS_VERSION);
 
@@ -61,16 +150,13 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
         }
         answers.locale.language = Some(select.interact().map_err(aborted)?);
     }
+    use_keyboard(answers, catalog);
     if let Some(entry) = answers
         .locale
         .language
         .as_deref()
         .and_then(|l| catalog.locale(l))
     {
-        if load_console_keymap(&entry.console) {
-            cliclack::log::remark(format!("Keyboard of this console: {}", entry.xkb)).ok();
-        }
-
         // A single timezone in the country is taken without a question.
         let zones = catalog.timezones(entry.country());
         if answers.locale.timezone.is_none() && zones.len() > 1 {

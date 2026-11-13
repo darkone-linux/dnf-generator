@@ -20,6 +20,10 @@ pub const ZONE: &str = "main";
 /// First uid of a declared account (`RE_UID` range of the generator).
 const ADMIN_UID: u32 = 1000;
 
+/// Header of the `etc/config.yaml` the installer writes: the only project it
+/// ever deletes by itself.
+pub const PROJECT_MARKER: &str = "Written by the DNF installer";
+
 pub struct Options {
     /// Where the project is written before it moves to the new system.
     pub project: PathBuf,
@@ -64,7 +68,7 @@ pub fn render_config(plan: &Plan) -> String {
     format!(
         r#"# yaml-language-server: $schema=../dnf/config/config.schema.json
 #
-# Written by the DNF installer. Every key is documented on hover.
+# {PROJECT_MARKER}. Every key is documented on hover.
 
 network:
   domain: {domain}
@@ -232,26 +236,139 @@ fn keep_readme(dir: &Path, locale: &str) -> Result<()> {
 }
 
 /// Disks, keys, secrets and `nixos-install`: all in `just install-here`.
-pub fn install(plan: &Plan, opts: &Options, luks: Option<&Passphrase>) -> Result<()> {
+/// `resume`: `DNF_RESUME=1`, the recipe keeps the disk if it checks out.
+pub fn install(plan: &Plan, opts: &Options, luks: Option<&Passphrase>, resume: bool) -> Result<()> {
     let luks = luks.map(|p| p.path.to_string_lossy().into_owned());
-    run(
-        &opts.project,
-        "just",
-        &[
-            "install-here",
-            &plan.hostname,
-            &plan.login,
-            &plan.password_hash,
-            "yes",
-            luks.as_deref().unwrap_or_default(),
-            plan.cache.as_deref().unwrap_or_default(),
-            plan.cache_key.as_deref().unwrap_or_default(),
-        ],
-    )
+    let args = [
+        "install-here",
+        &plan.hostname,
+        &plan.login,
+        &plan.password_hash,
+        "yes",
+        luks.as_deref().unwrap_or_default(),
+        plan.cache.as_deref().unwrap_or_default(),
+        plan.cache_key.as_deref().unwrap_or_default(),
+    ];
+
+    // Set or removed, never inherited: a stray one in the shell skips nothing.
+    let mut cmd = Command::new("just");
+    if resume {
+        cmd.env("DNF_RESUME", "1");
+    } else {
+        cmd.env_remove("DNF_RESUME");
+    }
+    run_command(cmd, &opts.project, "just", &args)
 }
 
 /// Where `install` leaves the new system mounted, keys included.
-const TARGET_ROOT: &str = "/mnt";
+pub const TARGET_ROOT: &str = "/mnt";
+
+/// What lies at the project path when `darkone new` starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Previous {
+    /// Missing or empty: a new project.
+    None,
+
+    /// Anything else, unreadable included: never touched.
+    Foreign,
+
+    /// The project of an earlier run of the installer.
+    Installer,
+}
+
+/// A symlink is foreign: deleting it would not delete what it shows.
+pub fn previous(dir: &Path) -> Previous {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return Previous::None;
+    };
+    if !meta.is_dir() {
+        return Previous::Foreign;
+    }
+    match fs::read_dir(dir).map(|mut d| d.next().is_none()) {
+        Ok(true) => Previous::None,
+        Ok(false) if written_by_installer(dir) => Previous::Installer,
+        _ => Previous::Foreign,
+    }
+}
+
+/// The marker in the header comment of `etc/config.yaml`, not anywhere below.
+fn written_by_installer(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("etc/config.yaml")).is_ok_and(|text| {
+        text.lines()
+            .take_while(|l| l.starts_with('#'))
+            .any(|l| l.contains(PROJECT_MARKER))
+    })
+}
+
+/// "Start from scratch": deletes the project of an earlier run, and nothing
+/// else. Root-owned leftovers of an interrupted recipe go through `sudo`.
+pub fn remove_previous(dir: &Path) -> Result<()> {
+    if previous(dir) != Previous::Installer {
+        return Err(format!(
+            "{} was not written by the DNF installer: left untouched, move it away \
+             or choose another place with --project",
+            dir.display()
+        ));
+    }
+    log("Removing the project of the previous attempt...");
+    if fs::remove_dir_all(dir).is_ok() {
+        return Ok(());
+    }
+    let path = dir.to_string_lossy();
+    run(Path::new("/"), "sudo", &["rm", "-rf", "--", &path])
+}
+
+/// What the generator can see of an earlier run; the recipe checks the keys
+/// themselves, readable by root only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResumeFacts {
+    /// The answers it ran with: saved, or the `--answers` file.
+    pub answers: bool,
+
+    /// `usr/secrets/nix.pub`: the run went past `bootstrap-keys`.
+    pub keys: bool,
+
+    /// Its disk still mounted on `TARGET_ROOT`.
+    pub mounted: bool,
+}
+
+impl ResumeFacts {
+    pub fn read(dir: &Path, answers: bool) -> Self {
+        Self {
+            answers,
+            keys: dir.join("usr/secrets/nix.pub").is_file(),
+            mounted: super::machine::mounted(TARGET_ROOT),
+        }
+    }
+
+    /// Why the earlier run cannot be resumed; `None`: the recipe decides.
+    pub fn blocker(&self) -> Option<&'static str> {
+        if !self.answers {
+            Some("its answers were not kept")
+        } else if !self.keys {
+            Some("it stopped before the keys of the network were made")
+        } else if !self.mounted {
+            Some("its disk is no longer mounted on /mnt")
+        } else {
+            None
+        }
+    }
+}
+
+/// A resume continues the very project of the answers: same host, admin,
+/// domain, disk and layout, or nothing.
+pub fn check_resume(plan: &Plan, dir: &Path) -> Result<()> {
+    let config = dir.join("etc/config.yaml");
+    match fs::read_to_string(&config) {
+        Ok(text) if text == render_config(plan) => Ok(()),
+        _ => Err(format!(
+            "cannot resume: {} was written from other answers or on another network; \
+             relaunch darkone new and choose \"Start from scratch\" (scripted: remove {} first)",
+            config.display(),
+            dir.display()
+        )),
+    }
+}
 
 /// Encrypted backup of the admin keys and the project on a USB stick, or its
 /// check (`just backup-admin`, `just backup-check`).
@@ -328,7 +445,11 @@ impl Drop for Passphrase {
 const NIX_FEATURES: [&str; 2] = ["--extra-experimental-features", "nix-command flakes"];
 
 fn run(dir: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
+    run_command(Command::new(program), dir, program, args)
+}
+
+fn run_command(mut cmd: Command, dir: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let status = cmd
         .args(args)
         .current_dir(dir)
         .status()
@@ -450,6 +571,111 @@ mod tests {
         );
         drop(written);
         assert!(!path.exists());
+    }
+
+    fn plan() -> Plan {
+        Plan {
+            login: "alice".into(),
+            name: "Alice Martin".into(),
+            email: None,
+            password_hash: "$y$j9T$salt$hash".into(),
+            domain: "home.arpa".into(),
+            hostname: "alice-desktop".into(),
+            profile: "desktop".into(),
+            ip_prefix: "10.1".into(),
+            macs: vec!["52:54:00:12:34:56".into()],
+            device: "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001".into(),
+            device_label: "512 GB EXAMPLE SSD".into(),
+            disko_profile: "btrfs-1-disk".into(),
+            encrypt: false,
+            locale: None,
+            keyboard: None,
+            timezone: None,
+            backup_device: None,
+            cache: None,
+            cache_key: None,
+        }
+    }
+
+    /// A project as `create` leaves it: the rendered `etc/config.yaml`.
+    fn installer_project(config: &str) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("etc")).unwrap();
+        fs::write(dir.path().join("etc/config.yaml"), config).unwrap();
+        dir
+    }
+
+    #[test]
+    fn previous_project_is_the_installer_one_by_its_header_only() {
+        let root = tempfile::TempDir::new().unwrap();
+        let missing = root.path().join("missing");
+        assert_eq!(previous(&missing), Previous::None);
+        fs::create_dir(&missing).unwrap();
+        assert_eq!(previous(&missing), Previous::None);
+
+        let ours = installer_project(&render_config(&plan()));
+        assert_eq!(previous(ours.path()), Previous::Installer);
+
+        // Marker below the header, or no config at all: someone else's.
+        let below = installer_project("network: {}\n# Written by the DNF installer\n");
+        assert_eq!(previous(below.path()), Previous::Foreign);
+        fs::write(missing.join("notes.txt"), "mine").unwrap();
+        assert_eq!(previous(&missing), Previous::Foreign);
+
+        let link = root.path().join("link");
+        symlink(ours.path(), &link).unwrap();
+        assert_eq!(previous(&link), Previous::Foreign);
+    }
+
+    #[test]
+    fn only_an_installer_project_is_removed() {
+        let foreign = installer_project("# My own network\nnetwork: {}\n");
+        assert!(remove_previous(foreign.path())
+            .unwrap_err()
+            .contains("was not written by the DNF installer"));
+        assert!(foreign.path().join("etc/config.yaml").exists());
+
+        let ours = installer_project(&render_config(&plan()));
+        fs::create_dir_all(ours.path().join("usr/secrets")).unwrap();
+        fs::write(ours.path().join("usr/secrets/nix.pub"), "ssh-ed25519 AAAA").unwrap();
+        remove_previous(ours.path()).unwrap();
+        assert!(!ours.path().exists());
+    }
+
+    #[test]
+    fn resume_needs_answers_keys_and_the_mounted_disk() {
+        let facts = |answers, keys, mounted| ResumeFacts {
+            answers,
+            keys,
+            mounted,
+        };
+        assert_eq!(facts(true, true, true).blocker(), None);
+        assert!(facts(false, true, true)
+            .blocker()
+            .unwrap()
+            .contains("answers"));
+        assert!(facts(true, false, true).blocker().unwrap().contains("keys"));
+        assert!(facts(true, true, false)
+            .blocker()
+            .unwrap()
+            .contains("mounted"));
+    }
+
+    #[test]
+    fn resume_continues_the_project_of_the_same_answers_only() {
+        let dir = installer_project(&render_config(&plan()));
+        check_resume(&plan(), dir.path()).unwrap();
+
+        let mut other = plan();
+        other.hostname = "other".into();
+        assert!(check_resume(&other, dir.path())
+            .unwrap_err()
+            .contains("Start from scratch"));
+        let mut moved = plan();
+        moved.ip_prefix = "10.2".into();
+        assert!(check_resume(&moved, dir.path()).is_err());
+        let empty = tempfile::TempDir::new().unwrap();
+        assert!(check_resume(&plan(), empty.path()).is_err());
     }
 
     #[test]

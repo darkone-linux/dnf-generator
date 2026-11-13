@@ -3,11 +3,15 @@
 //! A key the answers file gives skips its question. What a machine
 //! tells by itself (firmware, battery, single disk) is detected, not asked.
 
+use std::ffi::OsString;
+use std::fs;
+use std::io::Write as _;
 use std::net::Ipv4Addr;
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::catalog::Catalog;
 use super::machine::{human_size, Ipv4Net, Machine};
@@ -39,7 +43,7 @@ pub const DEFAULT_IP_PREFIX: &str = "10.0";
 /// Host profiles of a first workstation; a virtual machine stays a desktop.
 const WORKSTATION_PROFILES: [&str; 2] = ["laptop", "desktop"];
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Answers {
     pub version: Option<u32>,
@@ -52,7 +56,7 @@ pub struct Answers {
     pub cache: Cache,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Admin {
     pub login: Option<String>,
@@ -61,27 +65,27 @@ pub struct Admin {
     pub password_hash: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Network {
     pub domain: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Host {
     pub hostname: Option<String>,
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Disk {
     pub device: Option<String>,
     pub encrypt: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Locale {
     pub language: Option<String>,
@@ -89,7 +93,7 @@ pub struct Locale {
     pub timezone: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Backup {
     /// Partition of the USB stick that receives the backup of the admin keys;
@@ -97,7 +101,7 @@ pub struct Backup {
     pub device: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Cache {
     /// Binary cache beside cache.nixos.org, for the install only: the new
@@ -114,6 +118,47 @@ impl Answers {
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
+
+    /// Every field: none holds a passphrase, those only travel as files
+    /// (`--luks-passphrase-file`). The password is a crypt hash already.
+    pub fn to_yaml(&self) -> String {
+        let body = serde_yaml::to_string(self).expect("answers always serialize");
+        format!("{SAVED_ANSWERS_HEADER}{body}")
+    }
+
+    /// Born 0600 under a temporary name, then renamed: never readable by
+    /// another account, even for an instant, and never half-written.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let tmp = path.with_extension(format!("yaml.{}", std::process::id()));
+        fs::remove_file(&tmp).ok();
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut f| f.write_all(self.to_yaml().as_bytes()))
+            .and_then(|()| fs::rename(&tmp, path))
+            .map_err(|e| {
+                fs::remove_file(&tmp).ok();
+                format!("{}: {e}", path.display())
+            })
+    }
+}
+
+/// Answers of the last `darkone new`, kept for a relaunch after a failure.
+pub const SAVED_ANSWERS: &str = "dnf-answers.yaml";
+
+const SAVED_ANSWERS_HEADER: &str = "# Answers of an unfinished `darkone new`, in RAM until the \
+                                    install is done.\n# No passphrase here: they are typed \
+                                    again.\n";
+
+/// The session tmpfs of the user (`XDG_RUNTIME_DIR`), or nothing: `/tmp` is
+/// shared by every account, a password hash has no place there.
+pub fn saved_answers_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
+    runtime_dir
+        .map(PathBuf::from)
+        .filter(|d| d.is_absolute() && d.is_dir())
+        .map(|d| d.join(SAVED_ANSWERS))
 }
 
 /// Everything the install needs, checked: what the recap shows.
@@ -668,6 +713,49 @@ cache:
         assert!(errors(CONTRACT, &m)
             .iter()
             .any(|e| e.contains("Secure Boot")));
+    }
+
+    #[test]
+    fn saved_answers_round_trip_without_passphrase() {
+        let given = answers(CONTRACT);
+        let yaml = given.to_yaml();
+        assert_eq!(answers(&yaml), given);
+        assert!(yaml.contains("passwordHash: "), "{yaml}");
+        assert!(!yaml.to_lowercase().contains("passphrase:"), "{yaml}");
+
+        // Questions left unanswered stay unanswered: `null`, read back as such.
+        let partial = answers("version: 1\nadmin:\n  login: alice\n");
+        assert_eq!(answers(&partial.to_yaml()), partial);
+    }
+
+    #[test]
+    fn saved_answers_are_born_private() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(SAVED_ANSWERS);
+        answers(CONTRACT).save(&path).unwrap();
+        answers(CONTRACT).save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+            0o600
+        );
+        assert_eq!(Answers::load(&path).unwrap(), answers(CONTRACT));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn saved_answers_need_a_runtime_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            saved_answers_path(Some(dir.path().into())),
+            Some(dir.path().join(SAVED_ANSWERS))
+        );
+        assert_eq!(saved_answers_path(None), None);
+        assert_eq!(saved_answers_path(Some("relative".into())), None);
+        assert_eq!(
+            saved_answers_path(Some(dir.path().join("none").into())),
+            None
+        );
     }
 
     #[test]

@@ -7,12 +7,14 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-use dnf_generator::installer::answers::{Answers, Plan, DEFAULT_IP_PREFIX};
-use dnf_generator::installer::ask;
+use dnf_generator::installer::answers::{saved_answers_path, Answers, Plan, DEFAULT_IP_PREFIX};
+use dnf_generator::installer::ask::{self, PreviousRun};
 use dnf_generator::installer::catalog::Catalog;
 use dnf_generator::installer::checks;
 use dnf_generator::installer::machine::{self, Machine};
-use dnf_generator::installer::project::{self, log, Options, Passphrase, ZONE};
+use dnf_generator::installer::project::{
+    self, log, Options, Passphrase, Previous, ResumeFacts, TARGET_ROOT, ZONE,
+};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
 
 #[derive(Parser)]
@@ -46,6 +48,11 @@ struct NewArgs {
     /// Show the plan and change nothing; runs on any machine.
     #[arg(long)]
     dry_run: bool,
+
+    /// Continue the unfinished install of this installer session, its project
+    /// and disk kept. Scripted runs only: an interactive one offers it.
+    #[arg(long, requires = "non_interactive")]
+    resume: bool,
 
     /// Passphrase of an encrypted disk, never in the answers file, which
     /// circulates. Without it, the passphrase is asked.
@@ -102,10 +109,9 @@ fn new(args: NewArgs) -> Result<()> {
 
     // `--cache` / `DNF_CACHE` (`just try` image): used when the answers file gives no URL.
     if answers.cache.url.is_none() {
-        answers.cache.url = args.cache;
+        answers.cache.url = args.cache.clone();
     }
     let catalog = Catalog::load(&args.dnf_source)?;
-    let machine = Machine::detect();
     if !args.non_interactive {
         if !std::io::stdin().is_terminal() {
             return Err(
@@ -122,8 +128,34 @@ fn new(args: NewArgs) -> Result<()> {
         !args.non_interactive,
         args.dry_run,
     )?;
-    if !args.non_interactive {
-        ask::complete(&mut answers, &machine, &catalog)?;
+
+    // A dry run changes nothing: it neither reads nor keeps answers. Scripted
+    // runs read their own file. Unreadable saved answers: asked again.
+    let saved_path =
+        saved_answers_path(std::env::var_os("XDG_RUNTIME_DIR")).filter(|_| !args.dry_run);
+    let saved = saved_path
+        .as_deref()
+        .filter(|_| !args.non_interactive)
+        .and_then(|p| Answers::load(p).ok());
+    let after = after_previous_run(&args, saved.is_some())?;
+    let resume = after == After::Resume;
+
+    // An interactive resume takes the answers its project was written from.
+    let mut reused = false;
+    if let Some(saved) = saved.filter(|_| resume || args.answers.is_none()) {
+        if resume || ask::reuse_answers(&saved)? {
+            answers = saved;
+            reused = true;
+        }
+    }
+
+    // A previous run of this session mounted its disk on /mnt: still ours.
+    let reclaimed = (after != After::New).then_some(TARGET_ROOT);
+    let machine = Machine::detect(reclaimed);
+    match (args.non_interactive, reused) {
+        (true, _) => {}
+        (false, true) => ask::use_keyboard(&answers, &catalog),
+        (false, false) => ask::complete(&mut answers, &machine, &catalog)?,
     }
     let plan = Plan::resolve(&answers, &machine, &catalog).map_err(|errors| {
         format!(
@@ -131,6 +163,24 @@ fn new(args: NewArgs) -> Result<()> {
             errors.join("\n  - ")
         )
     })?;
+    if resume {
+        project::check_resume(&plan, &args.project)?;
+    }
+
+    // A relaunch after a failure skips the questions; not kept is no failure.
+    let not_kept = match saved_path.as_deref().map(|p| answers.save(p)) {
+        Some(Ok(())) => None,
+        Some(Err(e)) => Some(format!("answers not kept for a relaunch: {e}")),
+        None if args.dry_run => None,
+        None => Some("no XDG_RUNTIME_DIR: answers not kept for a relaunch".to_string()),
+    };
+    match not_kept {
+        Some(why) if args.non_interactive => log(&why),
+        Some(why) => {
+            cliclack::log::warning(why).ok();
+        }
+        None => {}
+    }
 
     // Checked before anything is typed or erased.
     match &plan.backup_device {
@@ -153,6 +203,7 @@ fn new(args: NewArgs) -> Result<()> {
             )
         }
         (None, true) if args.dry_run => None,
+        (None, true) if resume => Some(Passphrase::write("luks", &ask::luks_passphrase_again()?)?),
         (None, true) => Some(Passphrase::write("luks", &ask::luks_passphrase()?)?),
     };
     let backup_passphrase = match (&args.backup_passphrase_file, plan.encrypt) {
@@ -178,9 +229,10 @@ fn new(args: NewArgs) -> Result<()> {
         project: args.project,
         dnf_source: args.dnf_source,
     };
-    let recap = recap(&plan, &opts);
+    let recap = recap(&plan, &opts, resume);
     match (args.non_interactive, args.dry_run, args.yes) {
         (false, true, _) => ask::show(&recap)?,
+        (false, false, false) if resume => ask::resuming(&recap)?,
         (false, false, false) => ask::confirm(&recap, &plan.device)?,
         (true, false, false) => {
             return Err("--non-interactive needs --yes: the disk will be erased".to_string())
@@ -193,8 +245,15 @@ fn new(args: NewArgs) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
-    project::create(&plan, &opts)?;
-    project::install(&plan, &opts, luks.as_ref())?;
+
+    // Only now: an abort at the recap leaves the earlier run as it was.
+    if after == After::Scratch {
+        project::remove_previous(&opts.project)?;
+    }
+    if !resume {
+        project::create(&plan, &opts)?;
+    }
+    project::install(&plan, &opts, luks.as_ref(), resume)?;
     let passphrase = backup_passphrase
         .as_ref()
         .or(luks.as_ref())
@@ -207,11 +266,66 @@ fn new(args: NewArgs) -> Result<()> {
         ));
     }
 
+    // Installed: nothing left to resume, the password hash leaves the RAM too.
+    if let Some(path) = &saved_path {
+        std::fs::remove_file(path).ok();
+    }
+
     // Scripted runs stop at the message: the caller decides when to reboot.
     if !args.non_interactive && reboot_asked()? {
         reboot()?;
     }
     Ok(())
+}
+
+/// Where this run starts from, given what an earlier one left at the project
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum After {
+    New,
+    Resume,
+    Scratch,
+}
+
+/// Only an operator's choice deletes a project: a scripted run resumes with
+/// `--resume`, or is refused. Every doubt refuses, nothing is erased.
+fn after_previous_run(args: &NewArgs, answers_kept: bool) -> Result<After> {
+    let dir = &args.project;
+    if args.dry_run {
+        return Ok(After::New);
+    }
+    match project::previous(dir) {
+        Previous::Foreign => Err(format!(
+            "{} is not empty and was not written by the DNF installer: left untouched, \
+             move it away or choose another place with --project",
+            dir.display()
+        )),
+        Previous::None if args.resume => Err(format!(
+            "--resume: no previous install in {}",
+            dir.display()
+        )),
+        Previous::None => Ok(After::New),
+        Previous::Installer if !args.non_interactive => {
+            let facts = ResumeFacts::read(dir, answers_kept);
+            match ask::previous_run(dir, facts.blocker())? {
+                PreviousRun::Resume => Ok(After::Resume),
+                PreviousRun::Scratch => Ok(After::Scratch),
+                PreviousRun::Abort => Err("aborted, nothing changed".to_string()),
+            }
+        }
+        Previous::Installer if !args.resume => Err(format!(
+            "{0} holds the project of a previous install: --resume continues it; to start \
+             from scratch, remove it first (rm -rf {0})",
+            dir.display()
+        )),
+        Previous::Installer => match ResumeFacts::read(dir, args.answers.is_some()).blocker() {
+            Some(why) => Err(format!(
+                "cannot resume: {why}; to start from scratch, remove {} first",
+                dir.display()
+            )),
+            None => Ok(After::Resume),
+        },
+    }
 }
 
 /// Default no: a reboot with the key still plugged boots the installer again.
@@ -296,7 +410,7 @@ fn backup(plan: &Plan, opts: &Options, passphrase: &Passphrase, interactive: boo
 }
 
 /// Definitive choices are flagged: nothing changes them after the install (D5).
-fn recap(plan: &Plan, opts: &Options) -> String {
+fn recap(plan: &Plan, opts: &Options, resume: bool) -> String {
     let email = plan
         .email
         .as_ref()
@@ -322,9 +436,14 @@ fn recap(plan: &Plan, opts: &Options) -> String {
         (
             "Disk",
             format!(
-                "{} ({}), ERASED, layout {}, {}",
+                "{} ({}), {}, layout {}, {}",
                 plan.device,
                 plan.device_label,
+                if resume {
+                    "kept from the previous attempt"
+                } else {
+                    "ERASED"
+                },
                 plan.disko_profile,
                 if plan.encrypt {
                     "encrypted (passphrase at each boot)"

@@ -63,12 +63,14 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub fn detect() -> Self {
+    /// `reclaimed`: the target root of a previous install of this session,
+    /// whose disk counts as free to be resumed or erased again.
+    pub fn detect(reclaimed: Option<&str>) -> Self {
         Self {
             uefi: Path::new("/sys/firmware/efi").exists(),
             secure_boot: fs::read(SECURE_BOOT_VAR).is_ok_and(|v| v.get(4) == Some(&1)),
             battery: has_battery(),
-            disks: candidate_disks(),
+            disks: candidate_disks(reclaimed),
             networks: connected_networks(),
             macs: physical_macs(&read_nics()),
         }
@@ -170,8 +172,8 @@ fn has_battery() -> bool {
 /// one of the backup, never an install target.
 const MIN_INSTALL_SIZE: u64 = 20_000_000_000;
 
-fn candidate_disks() -> Vec<Disk> {
-    let busy = busy_disks();
+fn candidate_disks(reclaimed: Option<&str>) -> Vec<Disk> {
+    let busy = busy_disks(reclaimed);
     let Ok(entries) = fs::read_dir("/sys/block") else {
         return Vec::new();
     };
@@ -207,18 +209,51 @@ fn candidate_disks() -> Vec<Disk> {
 
 /// Disks holding a mounted filesystem or an active swap: the installer medium
 /// (`/iso`), or a disk the user is working with.
-fn busy_disks() -> BTreeSet<String> {
+fn busy_disks(reclaimed: Option<&str>) -> BTreeSet<String> {
     let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
     let swaps = fs::read_to_string("/proc/swaps").unwrap_or_default();
-    mounts
-        .lines()
-        .chain(swaps.lines())
-        .filter_map(|l| l.split_whitespace().next())
-        .filter(|src| src.starts_with("/dev/"))
+    busy_sources(&mounts, &swaps, reclaimed)
+        .into_iter()
         .filter_map(|src| fs::canonicalize(src).ok())
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .filter_map(|part| parent_disk(&part))
         .collect()
+}
+
+/// Devices of `/proc/mounts` and `/proc/swaps`, except the mounts on the
+/// `reclaimed` root or below it. A swap is never reclaimed.
+fn busy_sources<'a>(mounts: &'a str, swaps: &'a str, reclaimed: Option<&str>) -> Vec<&'a str> {
+    let kept = |l: &&str| {
+        let target = l.split_whitespace().nth(1).unwrap_or_default();
+        !reclaimed.is_some_and(|root| under(target, root))
+    };
+    mounts
+        .lines()
+        .filter(kept)
+        .chain(swaps.lines())
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|src| src.starts_with("/dev/"))
+        .collect()
+}
+
+/// `/mnt` and `/mnt/boot` are under `/mnt`, `/mntx` is not.
+fn under(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// `root` is a mount point (`/proc/mounts`), as `mountpoint -q` tells.
+pub fn mounted(root: &str) -> bool {
+    let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
+    is_mount_point(&mounts, root)
+}
+
+fn is_mount_point(mounts: &str, root: &str) -> bool {
+    mounts
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some(root))
 }
 
 /// `sdb1` → `sdb`, `nvme0n1p2` → `nvme0n1`, `sdb` → `sdb`.
@@ -285,7 +320,7 @@ pub fn backup_targets() -> Vec<BackupTarget> {
         .output();
     match out {
         Ok(o) if o.status.success() => {
-            parse_backup_targets(&String::from_utf8_lossy(&o.stdout), &busy_disks())
+            parse_backup_targets(&String::from_utf8_lossy(&o.stdout), &busy_disks(None))
         }
         _ => Vec::new(),
     }
@@ -453,6 +488,37 @@ mod tests {
         assert!(net("172.20.0.1", 12).overlaps(base("172.16.0.0"), 16));
         assert!(net("1.2.3.4", 0).overlaps(base("10.0.0.0"), 16));
         assert!(net("192.168.1.1", 32).overlaps(base("192.168.0.0"), 16));
+    }
+
+    const MOUNTS: &str = "/dev/sr0 /iso iso9660 ro 0 0\n\
+                          /dev/mapper/crypted /mnt btrfs rw 0 0\n\
+                          /dev/nvme0n1p1 /mnt/boot vfat rw 0 0\n\
+                          /dev/sdb1 /mntx ext4 rw 0 0\n\
+                          tmpfs /tmp tmpfs rw 0 0\n";
+    const SWAPS: &str = "Filename Type Size Used Priority\n/dev/sdc2 partition 8 0 -2\n";
+
+    #[test]
+    fn a_reclaimed_root_frees_its_disk_only() {
+        let all = [
+            "/dev/sr0",
+            "/dev/mapper/crypted",
+            "/dev/nvme0n1p1",
+            "/dev/sdb1",
+            "/dev/sdc2",
+        ];
+        assert_eq!(busy_sources(MOUNTS, SWAPS, None), all);
+        assert_eq!(
+            busy_sources(MOUNTS, SWAPS, Some("/mnt")),
+            ["/dev/sr0", "/dev/sdb1", "/dev/sdc2"]
+        );
+    }
+
+    #[test]
+    fn mount_point_is_an_exact_target() {
+        assert!(is_mount_point(MOUNTS, "/mnt"));
+        assert!(is_mount_point(MOUNTS, "/mnt/boot"));
+        assert!(!is_mount_point(MOUNTS, "/mn"));
+        assert!(!is_mount_point("", "/mnt"));
     }
 
     #[test]
