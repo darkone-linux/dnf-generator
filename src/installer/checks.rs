@@ -195,8 +195,10 @@ pub fn preflight(extra_cache: Option<&str>, interactive: bool, dry_run: bool) ->
             s.start("Checking memory, network and clock...");
         }
         let mut report = run(extra_cache);
-        if let Some(s) = &spinner {
-            s.stop("Pre-flight checks done");
+        match &spinner {
+            Some(s) if report.errors.is_empty() => s.stop("Pre-flight checks done"),
+            Some(s) => s.error("Pre-flight checks failed"),
+            None => {}
         }
         if dry_run {
             report.warnings.append(&mut report.errors);
