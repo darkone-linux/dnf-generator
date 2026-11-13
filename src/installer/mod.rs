@@ -4,6 +4,7 @@
 //! - `answers`: the answers file and the plan resolved from it;
 //! - `ask`: the questions for what the answers file leaves out;
 //! - `catalog`: the locales and timezones the installer offers;
+//! - `checks`: pre-flight checks before the first question (RAM, Internet, clock);
 //! - `machine`: what is detected instead of asked (firmware, battery, disks);
 //! - `project`: the project written in RAM, then installed by
 //!   `just install-here`, which moves it to /etc/nixos of the new system.
@@ -11,6 +12,7 @@
 pub mod answers;
 pub mod ask;
 pub mod catalog;
+pub mod checks;
 pub mod machine;
 pub mod project;
 

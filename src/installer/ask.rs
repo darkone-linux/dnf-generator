@@ -22,7 +22,7 @@ use super::Result;
 pub const MIN_PASSWORD: usize = 8;
 
 /// Ctrl-C or Esc in a prompt.
-fn aborted(e: io::Error) -> String {
+pub(crate) fn aborted(e: io::Error) -> String {
     if e.kind() == io::ErrorKind::Interrupted {
         "aborted, nothing changed".to_string()
     } else {
@@ -39,8 +39,12 @@ fn rule(
     move |v: &String| if re.is_match(v) { Ok(()) } else { Err(message) }
 }
 
+/// Opens the session: the pre-flight checks come before the questions.
+pub fn intro() -> Result<()> {
+    cliclack::intro("Darkone NixOS Framework: a new network").map_err(aborted)
+}
+
 pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> Result<()> {
-    cliclack::intro("Darkone NixOS Framework: a new network").map_err(aborted)?;
     answers.version.get_or_insert(ANSWERS_VERSION);
 
     // Keyboard first: everything typed after it, the password above all, must

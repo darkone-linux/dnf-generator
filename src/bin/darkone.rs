@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use dnf_generator::installer::answers::{Answers, Plan};
 use dnf_generator::installer::ask;
 use dnf_generator::installer::catalog::Catalog;
+use dnf_generator::installer::checks;
 use dnf_generator::installer::machine::{self, Machine};
 use dnf_generator::installer::project::{self, log, Options, Passphrase, IP_PREFIX, ZONE};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
@@ -112,6 +113,16 @@ fn new(args: NewArgs) -> Result<()> {
                     .to_string(),
             );
         }
+        ask::intro()?;
+    }
+
+    // Before the first question: a missing network fails here, not in the install.
+    checks::preflight(
+        answers.cache.url.as_deref(),
+        !args.non_interactive,
+        args.dry_run,
+    )?;
+    if !args.non_interactive {
         ask::complete(&mut answers, &machine, &catalog)?;
     }
     let plan = Plan::resolve(&answers, &machine, &catalog).map_err(|errors| {
