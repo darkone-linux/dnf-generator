@@ -1,7 +1,7 @@
 //! `darkone`: the DNF assistant. `darkone new` installs the first host of a
 //! network, its admin host, from the DNF installer image.
 
-use std::io::IsTerminal;
+use std::io::{ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -195,7 +195,41 @@ fn new(args: NewArgs) -> Result<()> {
             "Done, keys NOT backed up: {BACKUP_LATER}. Remove the installation media, then reboot."
         ));
     }
+
+    // Scripted runs stop at the message: the caller decides when to reboot.
+    if !args.non_interactive && reboot_asked()? {
+        reboot()?;
+    }
     Ok(())
+}
+
+/// Default no: a reboot with the key still plugged boots the installer again.
+fn reboot_asked() -> Result<bool> {
+    match cliclack::confirm("Remove the installation USB key. Reboot now?")
+        .initial_value(false)
+        .interact()
+    {
+        Ok(answer) => Ok(answer),
+
+        // Ctrl-C after the install: staying up is not a failure.
+        Err(e) if e.kind() == ErrorKind::Interrupted => Ok(false),
+        Err(e) => Err(format!("reboot question: {e}")),
+    }
+}
+
+/// `sudo`, as the installer recipes do: the ISO user has it passwordless.
+fn reboot() -> Result<()> {
+    let status = std::process::Command::new("sudo")
+        .args(["systemctl", "reboot"])
+        .status()
+        .map_err(|e| format!("cannot run sudo: {e}; reboot by hand: systemctl reboot"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`sudo systemctl reboot` failed ({status}); reboot by hand: systemctl reboot"
+        ))
+    }
 }
 
 /// The stick named by the answers, checked before the disk is erased.
