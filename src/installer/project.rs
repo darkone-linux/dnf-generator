@@ -16,7 +16,6 @@ use crate::nix_generator::nix_network::DEFAULT_LOCALE;
 
 /// Fixed for good (D5), shown in the recap without a question.
 pub const ZONE: &str = "main";
-pub const IP_PREFIX: &str = "10.0";
 
 /// First uid of a declared account (`RE_UID` range of the generator).
 const ADMIN_UID: u32 = 1000;
@@ -89,7 +88,7 @@ hosts:
         main: {device}
 "#,
         domain = q(&plan.domain),
-        prefix = q(IP_PREFIX),
+        prefix = q(&plan.ip_prefix),
         login = plan.login,
         name = q(&plan.name),
         hostname = q(&plan.hostname),

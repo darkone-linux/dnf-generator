@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,6 +26,24 @@ pub struct Disk {
     pub model: String,
 }
 
+/// An IPv4 network the machine is connected to: `192.168.1.0/24`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ipv4Net {
+    /// Address of the interface, host bits included.
+    pub addr: Ipv4Addr,
+    pub prefix_len: u8,
+}
+
+impl Ipv4Net {
+    /// The network and the `base/bits` one share an address: only the shorter
+    /// prefix is compared, `10.0.0.0/8` covers every `10.x/16`.
+    pub fn overlaps(&self, base: Ipv4Addr, bits: u8) -> bool {
+        let len = u32::from(self.prefix_len.min(bits).min(32));
+        let mask = u32::MAX.checked_shl(32 - len).unwrap_or(0);
+        u32::from(self.addr) & mask == u32::from(base) & mask
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Machine {
     pub uefi: bool,
@@ -33,6 +52,10 @@ pub struct Machine {
 
     /// Install candidates only: the installer medium is left out.
     pub disks: Vec<Disk>,
+
+    /// IPv4 networks of the interfaces, loopback included: the prefix of the
+    /// new zone must overlap none of them.
+    pub networks: Vec<Ipv4Net>,
 }
 
 impl Machine {
@@ -42,8 +65,38 @@ impl Machine {
             secure_boot: fs::read(SECURE_BOOT_VAR).is_ok_and(|v| v.get(4) == Some(&1)),
             battery: has_battery(),
             disks: candidate_disks(),
+            networks: connected_networks(),
         }
     }
+}
+
+/// No `ip`, or an unreadable answer: no network known, the zone gets `10.0`.
+fn connected_networks() -> Vec<Ipv4Net> {
+    match Command::new("ip").args(["-j", "-4", "addr"]).output() {
+        Ok(o) if o.status.success() => parse_networks(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+/// `ip -j -4 addr`: one entry per interface, each with its `addr_info` list.
+fn parse_networks(json: &str) -> Vec<Ipv4Net> {
+    let Ok(links) = serde_json::from_str::<Value>(json) else {
+        return Vec::new();
+    };
+    links
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|link| link["addr_info"].as_array().into_iter().flatten())
+        .filter_map(|info| {
+            Some(Ipv4Net {
+                addr: info["local"].as_str()?.parse().ok()?,
+                prefix_len: u8::try_from(info["prefixlen"].as_u64()?)
+                    .ok()
+                    .filter(|l| *l <= 32)?,
+            })
+        })
+        .collect()
 }
 
 /// HID peripherals (wireless mouse, keyboard) report a battery too, with the
@@ -253,6 +306,51 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn networks_are_read_from_ip_json() {
+        let json = r#"[
+          {"ifindex": 1, "ifname": "lo", "flags": ["LOOPBACK", "UP"],
+           "addr_info": [{"family": "inet", "local": "127.0.0.1", "prefixlen": 8,
+             "scope": "host", "label": "lo"}]},
+          {"ifindex": 2, "ifname": "enp1s0", "flags": ["BROADCAST", "UP"],
+           "addr_info": [
+             {"family": "inet", "local": "10.0.2.15", "prefixlen": 24,
+              "broadcast": "10.0.2.255", "scope": "global", "dynamic": true},
+             {"family": "inet", "local": "192.168.1.20", "prefixlen": 24,
+              "scope": "global"}]},
+          {"ifindex": 3, "ifname": "wlp2s0", "flags": ["BROADCAST"]}
+        ]"#;
+        let net = |a: &str, prefix_len| Ipv4Net {
+            addr: a.parse().unwrap(),
+            prefix_len,
+        };
+        assert_eq!(
+            parse_networks(json),
+            vec![
+                net("127.0.0.1", 8),
+                net("10.0.2.15", 24),
+                net("192.168.1.20", 24)
+            ]
+        );
+        assert!(parse_networks("not json").is_empty());
+        assert!(parse_networks("[]").is_empty());
+    }
+
+    #[test]
+    fn overlap_compares_the_shorter_prefix() {
+        let net = |a: &str, prefix_len| Ipv4Net {
+            addr: a.parse().unwrap(),
+            prefix_len,
+        };
+        let base = |a: &str| a.parse().unwrap();
+        assert!(net("10.0.2.15", 24).overlaps(base("10.0.0.0"), 16));
+        assert!(!net("10.0.2.15", 24).overlaps(base("10.1.0.0"), 16));
+        assert!(net("10.7.7.7", 8).overlaps(base("10.200.0.0"), 16));
+        assert!(net("172.20.0.1", 12).overlaps(base("172.16.0.0"), 16));
+        assert!(net("1.2.3.4", 0).overlaps(base("10.0.0.0"), 16));
+        assert!(net("192.168.1.1", 32).overlaps(base("192.168.0.0"), 16));
+    }
 
     #[test]
     fn human_size_rounds_like_a_label() {

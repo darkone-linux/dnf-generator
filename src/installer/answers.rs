@@ -3,13 +3,14 @@
 //! A key the answers file gives skips its question. What a machine
 //! tells by itself (firmware, battery, single disk) is detected, not asked.
 
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use regex::Regex;
 use serde::Deserialize;
 
 use super::catalog::Catalog;
-use super::machine::{human_size, Machine};
+use super::machine::{human_size, Ipv4Net, Machine};
 use super::Result;
 use crate::nix_generator::validation::{RE_DEVICE, RE_TIMEZONE};
 pub use crate::nix_generator::validation::{RE_FQDN, RE_HOSTNAME, RE_LOGIN, RE_NAME};
@@ -31,6 +32,9 @@ pub const RE_CACHE_KEY: &str = r"^[A-Za-z0-9._-]+:[A-Za-z0-9+/]+={0,2}$";
 
 /// Logins of system accounts, never an admin's.
 pub const RESERVED_LOGINS: [&str; 2] = ["nix", "root"];
+
+/// First zone prefix tried, kept when no connected network overlaps it.
+pub const DEFAULT_IP_PREFIX: &str = "10.0";
 
 /// Host profiles of a first workstation; a virtual machine stays a desktop.
 const WORKSTATION_PROFILES: [&str; 2] = ["laptop", "desktop"];
@@ -122,6 +126,9 @@ pub struct Plan {
     pub domain: String,
     pub hostname: String,
     pub profile: String,
+
+    /// `/16` prefix of the zone, `10.0` unless a connected network overlaps it.
+    pub ip_prefix: String,
     pub device: String,
     pub device_label: String,
     pub disko_profile: String,
@@ -274,6 +281,19 @@ impl Plan {
             );
         }
 
+        let ip_prefix = free_ip_prefix(&machine.networks).unwrap_or_else(|| {
+            let taken: Vec<String> = machine
+                .networks
+                .iter()
+                .map(|n| format!("{}/{}", n.addr, n.prefix_len))
+                .collect();
+            errors.push(format!(
+                "no free zone prefix: 10.x, 172.16-31.x and 192.168.x all overlap a connected network ({})",
+                taken.join(", ")
+            ));
+            String::new()
+        });
+
         let disk = pick_disk(answers.disk.device.as_deref(), machine).unwrap_or_else(|e| {
             errors.push(e);
             None
@@ -296,6 +316,7 @@ impl Plan {
             domain,
             hostname,
             profile,
+            ip_prefix,
             device: disk.path.clone(),
             device_label: format!("{} {}", human_size(disk.size), disk.model)
                 .trim()
@@ -310,6 +331,25 @@ impl Plan {
             cache_key,
         })
     }
+}
+
+/// Zone prefixes tried in order: `10.0` stays the default, the box of a home
+/// network (`192.168`) comes last.
+fn ip_prefix_candidates() -> impl Iterator<Item = (u8, u8)> {
+    (0..=255)
+        .map(|b| (10, b))
+        .chain((16..=31).map(|b| (172, b)))
+        .chain(std::iter::once((192, 168)))
+}
+
+/// First candidate whose `/16` overlaps no connected network.
+fn free_ip_prefix(networks: &[Ipv4Net]) -> Option<String> {
+    ip_prefix_candidates()
+        .find(|&(a, b)| {
+            let base = Ipv4Addr::new(a, b, 0, 0);
+            !networks.iter().any(|n| n.overlaps(base, 16))
+        })
+        .map(|(a, b)| format!("{a}.{b}"))
 }
 
 /// The disk named by the answers, or the only candidate of the machine.
@@ -392,6 +432,7 @@ cache:
             secure_boot: false,
             battery: false,
             disks: vec![disk("nvme0n1", "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001")],
+            networks: Vec::new(),
         }
     }
 
@@ -409,6 +450,7 @@ cache:
         assert_eq!(plan.login, "alice");
         assert_eq!(plan.email.as_deref(), Some("alice@example.org"));
         assert_eq!(plan.profile, "laptop");
+        assert_eq!(plan.ip_prefix, "10.0");
         assert_eq!(plan.device, "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001");
         assert_eq!(plan.device_label, "512 GB EXAMPLE SSD");
         assert_eq!(plan.disko_profile, "btrfs-1-disk");
@@ -566,6 +608,52 @@ cache:
         assert!(errors(&yaml, &machine())
             .iter()
             .any(|e| e.contains("'ru_RU.UTF-8' is not offered")));
+    }
+
+    /// Machine connected to the given `addr/len` networks.
+    fn connected(nets: &[&str]) -> Machine {
+        let mut m = machine();
+        m.networks = nets
+            .iter()
+            .map(|n| {
+                let (addr, len) = n.split_once('/').unwrap();
+                Ipv4Net {
+                    addr: addr.parse().unwrap(),
+                    prefix_len: len.parse().unwrap(),
+                }
+            })
+            .collect();
+        m
+    }
+
+    fn prefix(nets: &[&str]) -> String {
+        Plan::resolve(&answers(CONTRACT), &connected(nets), &catalog())
+            .unwrap()
+            .ip_prefix
+    }
+
+    #[test]
+    fn zone_prefix_avoids_the_connected_networks() {
+        assert_eq!(prefix(&[]), "10.0");
+        assert_eq!(prefix(&["127.0.0.1/8", "192.168.1.20/24"]), "10.0");
+        assert_eq!(prefix(&["10.0.0.0/24"]), "10.1");
+
+        // QEMU user networking.
+        assert_eq!(prefix(&["10.0.2.15/24"]), "10.1");
+        assert_eq!(prefix(&["10.0.2.15/24", "10.1.0.4/16"]), "10.2");
+        assert_eq!(prefix(&["10.0.0.0/8"]), "172.16");
+        assert_eq!(prefix(&["10.0.0.0/8", "172.16.0.0/12"]), "192.168");
+        assert_eq!(prefix(&["10.0.0.0/8", "172.16.5.1/16"]), "172.17");
+    }
+
+    #[test]
+    fn zone_prefix_gives_up_when_everything_is_taken() {
+        let m = connected(&["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+        let errs = Plan::resolve(&answers(CONTRACT), &m, &catalog()).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.starts_with("no free zone prefix")),
+            "{errs:?}"
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ fn plan() -> Plan {
         domain: "example.org".to_string(),
         hostname: "poste".to_string(),
         profile: "laptop".to_string(),
+        ip_prefix: "10.1".to_string(),
         device: "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001".to_string(),
         device_label: "512 GB EXAMPLE SSD".to_string(),
         disko_profile: "btrfs-1-disk".to_string(),
@@ -63,7 +64,9 @@ fn generate(config: &str) -> (TempDir, Generate) {
 
 #[test]
 fn installer_config_is_accepted_by_the_generator() {
-    let (dir, generate) = generate(&render_config(&plan()));
+    let config = render_config(&plan());
+    assert!(config.contains(r#"ipPrefix: "10.1""#), "{config}");
+    let (dir, generate) = generate(&config);
     let hosts = generate.generate_hosts_raw().unwrap();
     assert!(hosts.contains(r#"hostname = "poste";"#), "{hosts}");
     assert!(hosts.contains(r#"profile = "laptop";"#), "{hosts}");

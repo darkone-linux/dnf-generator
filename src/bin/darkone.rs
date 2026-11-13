@@ -7,12 +7,12 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-use dnf_generator::installer::answers::{Answers, Plan};
+use dnf_generator::installer::answers::{Answers, Plan, DEFAULT_IP_PREFIX};
 use dnf_generator::installer::ask;
 use dnf_generator::installer::catalog::Catalog;
 use dnf_generator::installer::checks;
 use dnf_generator::installer::machine::{self, Machine};
-use dnf_generator::installer::project::{self, log, Options, Passphrase, IP_PREFIX, ZONE};
+use dnf_generator::installer::project::{self, log, Options, Passphrase, ZONE};
 use dnf_generator::installer::{Result, INSTALLER_MARKER};
 
 #[derive(Parser)]
@@ -308,13 +308,16 @@ fn recap(plan: &Plan, opts: &Options) -> String {
         .flatten()
         .collect::<Vec<_>>()
         .join(", ");
-    [
+    let mut rows = vec![
         (
             "Admin",
             format!("{} ({}{email}), definitive login", plan.login, plan.name),
         ),
         ("Network", format!("{}, definitive", plan.domain)),
-        ("Zone", format!("{ZONE}, {IP_PREFIX}.0.0/16, definitive")),
+        (
+            "Zone",
+            format!("{ZONE}, {}.0.0/16, definitive", plan.ip_prefix),
+        ),
         ("Host", format!("{}, {}", plan.hostname, plan.profile)),
         (
             "Disk",
@@ -356,9 +359,24 @@ fn recap(plan: &Plan, opts: &Options) -> String {
             },
         ),
         ("Framework", opts.dnf_url.clone().unwrap_or_default()),
-    ]
-    .iter()
-    .map(|(key, value)| format!("{key:<10} {value}"))
-    .collect::<Vec<_>>()
-    .join("\n")
+    ];
+
+    // The default prefix is taken: say so under the zone, the choice is definitive.
+    if plan.ip_prefix != DEFAULT_IP_PREFIX {
+        let zone = rows.iter().position(|(key, _)| *key == "Zone");
+        rows.insert(
+            zone.map_or(rows.len(), |i| i + 1),
+            (
+                "",
+                format!(
+                    "{DEFAULT_IP_PREFIX} is used by the current network: {} chosen",
+                    plan.ip_prefix
+                ),
+            ),
+        );
+    }
+    rows.iter()
+        .map(|(key, value)| format!("{key:<10} {value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
