@@ -197,6 +197,17 @@ mod tests {
         }
     }
 
+    /// The default domain offered by the installer must pass its own check.
+    #[test]
+    fn fqdn() {
+        for ok in ["home.arpa", "example.org", "hcs.example.co.uk"] {
+            assert!(assert_regex(RE_FQDN, ok, "").is_ok(), "{ok}");
+        }
+        for bad in ["localhost", "example.", "-bad.org", "a b.org"] {
+            assert!(assert_regex(RE_FQDN, bad, "").is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn timeout_keys() {
         assert!(assert_timeout_key("killGrace", "").is_ok());

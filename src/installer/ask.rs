@@ -133,7 +133,7 @@ pub fn complete(answers: &mut Answers, machine: &Machine, catalog: &Catalog) -> 
         )
         .map_err(aborted)?;
         let domain: String = cliclack::input("Network domain (definitive)")
-            .placeholder("home.arpa")
+            .default_input("home.arpa")
             .validate(rule(RE_FQDN, "a domain name, like example.org"))
             .interact()
             .map_err(aborted)?;
