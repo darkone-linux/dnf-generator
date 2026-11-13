@@ -6,6 +6,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.4.0] - 2026-11-13
+
+### Added
+
+- **doc**: One reference page per module, sub-module options on its parent
+- **installer**: Propose reboot after the install
+- **installer**: Accept home.arpa as the default network domain
+- **installer**: Pre-flight checks of RAM, network and clock
+- **installer**: Zone prefix chosen outside the connected networks
+- **installer**: Record the MACs of the physical cards in config.yaml
+- **installer**: Resume an interrupted darkone new, or start from scratch
+- **doc**: Category icon before the module page title
+
+### Fixed
+
+- **registry**: Refuse a missing or non-literal modules.nix instead of defaults
+- **doc**: Leave code spans literal when escaping MDX text
+- **installer**: Pre-flight spinner says failed when a check fails
+- **installer**: RAM threshold 5500 MiB, a 4 GiB machine thrashes
+
+### Removed
+
+- **installer**: Drop the package cache question from darkone new
+
+### Documentation
+
+- **dev**: Drop pointers to unpublished agent files and stale paths
+- **comments**: Drop pointers to private specs from published code
+
 ## [0.3.2] - 2026-10-24
 
 ### Added
@@ -108,7 +137,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.2.1...v0.3.0
