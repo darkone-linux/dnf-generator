@@ -11,10 +11,10 @@ use super::ask::aborted;
 use super::project::log;
 use super::Result;
 
-/// MemTotal, in MiB, under which the install is refused. PROVISIONAL: to be
-/// confirmed by measuring with `dnf-vm --memory` (default 8192). The image
-/// runs from RAM; a 4 GiB machine reports about 3.8 GiB, 3500 lets it pass.
-pub const MIN_RAM_MIB: u64 = 3500;
+/// MemTotal, in MiB, under which the install is refused. Measured with
+/// `dnf-vm --memory`: 4096 thrashes (no install after 90 min), 6144 installs
+/// in 12 min like 8192. A 6 GiB machine reports about 5.8 GiB.
+pub const MIN_RAM_MIB: u64 = 5500;
 
 /// The file every binary cache serves: its body starts with `StoreDir:`.
 const CACHE_INFO: &str = "nix-cache-info";
@@ -44,7 +44,7 @@ fn ram_error(total_mib: Option<u64>) -> Option<String> {
     let total = total_mib?;
     (total < MIN_RAM_MIB).then(|| {
         format!(
-            "RAM: {total} MiB found, at least {MIN_RAM_MIB} MiB (a 4 GiB machine) needed: \
+            "RAM: {total} MiB found, at least {MIN_RAM_MIB} MiB (a 6 GiB machine) needed: \
              the installer image and the install live in memory"
         )
     })
@@ -257,8 +257,9 @@ mod tests {
         assert!(ram_error(Some(MIN_RAM_MIB - 1)).is_some());
         assert_eq!(ram_error(Some(MIN_RAM_MIB)), None);
 
-        // 4 GiB machine: MemTotal about 3.8 GiB.
-        assert_eq!(ram_error(Some(3900)), None);
+        // MemTotal of a 6 GiB machine about 5.8 GiB, of a 4 GiB one 3.8 GiB.
+        assert_eq!(ram_error(Some(5900)), None);
+        assert!(ram_error(Some(3900)).is_some());
         assert_eq!(ram_error(Some(8000)), None);
 
         // Not readable: no verdict.
