@@ -99,7 +99,7 @@ fn new(args: NewArgs) -> Result<()> {
         None => Answers::default(),
     };
 
-    // `DNF_CACHE` of the `just try` image: an answer, its question skipped.
+    // `--cache` / `DNF_CACHE` (`just try` image): used when the answers file gives no URL.
     if answers.cache.url.is_none() {
         answers.cache.url = args.cache;
     }
