@@ -54,6 +54,13 @@ pub fn render_config(plan: &Plan) -> String {
         .as_ref()
         .map(|e| format!("    email: {}\n", q(e)))
         .unwrap_or_default();
+
+    // Several cards: one comma-separated string, the form `mac:` accepts.
+    let mac = if plan.macs.is_empty() {
+        String::new()
+    } else {
+        format!("    mac: {}\n", q(&plan.macs.join(",")))
+    };
     format!(
         r#"# yaml-language-server: $schema=../dnf/config/config.schema.json
 #
@@ -81,7 +88,7 @@ hosts:
     name: "Admin workstation"
     zone: {zone}
     profile: {profile}
-    users: [{login_q}]
+{mac}    users: [{login_q}]
     disko:
       profile: {disko}
       devices:

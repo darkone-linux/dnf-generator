@@ -19,6 +19,10 @@ fn plan() -> Plan {
         hostname: "poste".to_string(),
         profile: "laptop".to_string(),
         ip_prefix: "10.1".to_string(),
+        macs: vec![
+            "aa:bb:cc:00:00:01".to_string(),
+            "aa:bb:cc:00:00:02".to_string(),
+        ],
         device: "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001".to_string(),
         device_label: "512 GB EXAMPLE SSD".to_string(),
         disko_profile: "btrfs-1-disk".to_string(),
@@ -97,4 +101,49 @@ fn installer_config_without_locale_or_email() {
     assert!(!config.contains("default:"), "{config}");
     let (_dir, generate) = generate(&config);
     assert!(generate.generate_users_raw().unwrap().contains("alice"));
+}
+
+#[test]
+fn host_mac_without_fixed_address_is_accepted() {
+    let config = render_config(&plan());
+    assert!(
+        config.contains(r#"mac: "aa:bb:cc:00:00:01,aa:bb:cc:00:00:02""#),
+        "{config}"
+    );
+    let (_dir, with_mac) = generate(&config);
+
+    // No `ip`: nothing to reserve, the MAC is not emitted in `hosts.nix`.
+    let hosts = with_mac.generate_hosts_raw().unwrap();
+    assert!(!hosts.contains("aa:bb:cc"), "{hosts}");
+    let network = with_mac.generate_network_raw().unwrap();
+    assert!(!network.contains("aa:bb:cc"), "{network}");
+
+    // Same generated Nix as without the key: the toplevel cannot change.
+    let mut bare = plan();
+    bare.macs.clear();
+    let (_bare_dir, bare_generate) = generate(&render_config(&bare));
+    assert_eq!(hosts, bare_generate.generate_hosts_raw().unwrap());
+    assert_eq!(network, bare_generate.generate_network_raw().unwrap());
+}
+
+#[test]
+fn host_mac_gets_a_dhcp_reservation_once_the_address_is_fixed() {
+    // The gateway day: the operator only appends the address to the zone.
+    let config = render_config(&plan()).replace(r#"zone: "main""#, r#"zone: "main:5.1""#);
+    let (_dir, generate) = generate(&config);
+    let network = generate.generate_network_raw().unwrap();
+    assert!(
+        network.contains("aa:bb:cc:00:00:01,aa:bb:cc:00:00:02,10.1.5.1"),
+        "{network}"
+    );
+}
+
+#[test]
+fn installer_config_without_a_known_card_has_no_mac_key() {
+    let mut plan = plan();
+    plan.macs.clear();
+    let config = render_config(&plan);
+    assert!(!config.contains("mac:"), "{config}");
+    let (_dir, generate) = generate(&config);
+    assert!(generate.generate_hosts_raw().is_ok());
 }

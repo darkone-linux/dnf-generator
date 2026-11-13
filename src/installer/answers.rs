@@ -129,6 +129,9 @@ pub struct Plan {
 
     /// `/16` prefix of the zone, `10.0` unless a connected network overlaps it.
     pub ip_prefix: String,
+
+    /// MACs of the physical cards, wired first: the host's `mac` key.
+    pub macs: Vec<String>,
     pub device: String,
     pub device_label: String,
     pub disko_profile: String,
@@ -317,6 +320,7 @@ impl Plan {
             hostname,
             profile,
             ip_prefix,
+            macs: machine.macs.clone(),
             device: disk.path.clone(),
             device_label: format!("{} {}", human_size(disk.size), disk.model)
                 .trim()
@@ -433,6 +437,7 @@ cache:
             battery: false,
             disks: vec![disk("nvme0n1", "/dev/disk/by-id/nvme-EXAMPLE_SSD_0001")],
             networks: Vec::new(),
+            macs: Vec::new(),
         }
     }
 

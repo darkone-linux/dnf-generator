@@ -56,6 +56,10 @@ pub struct Machine {
     /// IPv4 networks of the interfaces, loopback included: the prefix of the
     /// new zone must overlap none of them.
     pub networks: Vec<Ipv4Net>,
+
+    /// MACs of the physical network cards, wired first: the fixed address a
+    /// gateway hands out later is reserved on them.
+    pub macs: Vec<String>,
 }
 
 impl Machine {
@@ -66,8 +70,59 @@ impl Machine {
             battery: has_battery(),
             disks: candidate_disks(),
             networks: connected_networks(),
+            macs: physical_macs(&read_nics()),
         }
     }
+}
+
+/// What `/sys/class/net/<if>` says of an interface.
+#[derive(Debug, Clone, PartialEq)]
+struct Nic {
+    name: String,
+
+    /// Backed by hardware: lo, bridges, veth, tun and bonds have no `device`.
+    physical: bool,
+    wireless: bool,
+    mac: String,
+}
+
+fn read_nics() -> Vec<Nic> {
+    let Ok(entries) = fs::read_dir("/sys/class/net") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| {
+            let sys = e.path();
+            Nic {
+                name: e.file_name().to_string_lossy().into_owned(),
+                physical: sys.join("device").exists(),
+                wireless: sys.join("wireless").exists() || sys.join("phy80211").exists(),
+                mac: fs::read_to_string(sys.join("address")).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// Wired before wireless, then by interface name: the first MAC stays the same
+/// from one run to the next. Lowercase, as `config.yaml` requires; an
+/// unreadable, all-zero or repeated address is dropped.
+fn physical_macs(nics: &[Nic]) -> Vec<String> {
+    let mut nics: Vec<&Nic> = nics.iter().filter(|n| n.physical).collect();
+    nics.sort_by(|a, b| (a.wireless, &a.name).cmp(&(b.wireless, &b.name)));
+    let mut macs: Vec<String> = Vec::new();
+    for nic in nics {
+        let mac = nic.mac.trim().to_lowercase();
+        let octets: Vec<&str> = mac.split(':').collect();
+        let valid = octets.len() == 6
+            && octets
+                .iter()
+                .all(|o| o.len() == 2 && o.bytes().all(|b| b.is_ascii_hexdigit()));
+        if valid && octets.iter().any(|o| *o != "00") && !macs.contains(&mac) {
+            macs.push(mac);
+        }
+    }
+    macs
 }
 
 /// No `ip`, or an unreadable answer: no network known, the zone gets `10.0`.
@@ -335,6 +390,54 @@ mod tests {
         );
         assert!(parse_networks("not json").is_empty());
         assert!(parse_networks("[]").is_empty());
+    }
+
+    #[test]
+    fn macs_are_wired_first_then_wireless_by_name() {
+        let nic = |name: &str, physical, wireless, mac: &str| Nic {
+            name: name.to_string(),
+            physical,
+            wireless,
+            mac: format!("{mac}\n"),
+        };
+        let nics = [
+            nic("wlp3s0", true, true, "AA:AA:AA:00:00:03"),
+            nic("lo", false, false, "00:00:00:00:00:00"),
+            nic("enp5s0", true, false, "aa:aa:aa:00:00:02"),
+            nic("br0", false, false, "aa:aa:aa:00:00:09"),
+            nic("veth1", false, false, "aa:aa:aa:00:00:08"),
+            nic("enp1s0", true, false, "aa:aa:aa:00:00:01"),
+            nic("wlan0", true, true, "aa:aa:aa:00:00:04"),
+        ];
+        assert_eq!(
+            physical_macs(&nics),
+            [
+                "aa:aa:aa:00:00:01",
+                "aa:aa:aa:00:00:02",
+                "aa:aa:aa:00:00:04",
+                "aa:aa:aa:00:00:03"
+            ]
+        );
+    }
+
+    #[test]
+    fn macs_skip_zero_malformed_and_repeated_addresses() {
+        let nic = |name: &str, mac: &str| Nic {
+            name: name.to_string(),
+            physical: true,
+            wireless: false,
+            mac: mac.to_string(),
+        };
+        let nics = [
+            nic("eth0", "00:00:00:00:00:00"),
+            nic("eth1", "aa:bb:cc:dd:ee"),
+            nic("eth2", ""),
+            nic("eth3", "zz:bb:cc:dd:ee:ff"),
+            nic("eth4", "AA:BB:CC:DD:EE:FF"),
+            nic("eth5", "aa:bb:cc:dd:ee:ff"),
+        ];
+        assert_eq!(physical_macs(&nics), ["aa:bb:cc:dd:ee:ff"]);
+        assert!(physical_macs(&[]).is_empty());
     }
 
     #[test]
