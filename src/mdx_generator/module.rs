@@ -219,7 +219,7 @@ pub fn generate_pages(project_root: &Path) -> Result<Vec<Page>> {
         for entry in &c.entries {
             pages.push(Page {
                 rel_path: format!("{DOC_DIR}/{slug}/{}.mdx", entry.slug),
-                content: localize_links(&render_module_page(entry)),
+                content: localize_links(&render_module_page(entry, c.category.icon)),
             });
         }
     }
@@ -322,11 +322,14 @@ fn summary(comment: &str) -> String {
 
 /// One module: header comment, options (its own, then per sub-module file),
 /// link to the source. The frontmatter holds identifiers only, so that the
-/// translation copies it as is.
-fn render_module_page(entry: &ModuleEntry) -> String {
+/// translation copies it as is; the category icon prefixes the title only, the
+/// menu label stays bare.
+fn render_module_page(entry: &ModuleEntry, icon: &str) -> String {
     let mut out = format!(
-        "---\ntitle: {}\nsidebar:\n  label: \"{}\"\n---\n\n",
-        entry.path, entry.label
+        "---\ntitle: \"{} {}\"\nsidebar:\n  label: \"{}\"\n---\n\n",
+        entity_to_char(icon),
+        entry.path,
+        entry.label
     );
     if let Some(comment) = &entry.comment {
         out.push_str(&escape(&promote_headings(comment)));
@@ -397,7 +400,7 @@ fn promote_headings(comment: &str) -> String {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Turn a numeric HTML entity (`&#x1F4E6;`) into its character so it renders in
-/// a JSX attribute (`title="📦 …"`). Non-entity input is returned unchanged.
+/// a JSX attribute or the frontmatter (`title="📦 …"`). Non-entity input is returned unchanged.
 fn entity_to_char(entity: &str) -> String {
     entity
         .strip_prefix("&#x")
@@ -670,7 +673,7 @@ mod tests {
         let pages = generate_pages(dir.path()).unwrap();
         let mdx = page(&pages, "security/foo.mdx");
         assert!(
-            mdx.starts_with("---\ntitle: darkone.security.foo\nsidebar:\n  label: \"foo\"\n---\n")
+            mdx.starts_with("---\ntitle: \"🔑 darkone.security.foo\"\nsidebar:\n  label: \"foo\"\n---\n")
         );
         assert!(mdx.contains("A foo service."));
         assert!(mdx.contains("## Options\n\n* **enable** `bool` Enable foo"));
@@ -764,7 +767,7 @@ mod tests {
 
         let pages = generate_pages(dir.path()).unwrap();
         let mdx = page(&pages, "mixin/host-gateway.mdx");
-        assert!(mdx.contains("title: darkone.host.gateway\n"));
+        assert!(mdx.contains("title: \"📦 darkone.host.gateway\"\n"));
         assert!(mdx.contains("label: \"host.gateway\""));
         assert!(mdx.contains("blob/main/modules/mixin/host/gateway.nix"));
         assert!(page(&pages, "mixin/index.mdx")
@@ -913,7 +916,7 @@ mod tests {
 
         let pages = generate_pages(dir.path()).unwrap();
         let mdx = page(&pages, "system/services.mdx");
-        assert!(mdx.contains("title: darkone.system.services\n"));
+        assert!(mdx.contains("title: \"⚙ darkone.system.services\"\n"));
         assert!(mdx.contains("* **service** `attrs` Services"));
         assert!(mdx.contains("  * **enable** `bool` Enable proxy"));
         assert!(mdx.contains("  * **persist.dirs** `listOf str` Dirs"));
