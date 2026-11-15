@@ -72,9 +72,14 @@ impl Machine {
             battery: has_battery(),
             disks: candidate_disks(reclaimed),
             networks: connected_networks(),
-            macs: physical_macs(&read_nics()),
+            macs: local_macs(),
         }
     }
+}
+
+/// MACs of the physical cards of this machine, wired first.
+pub fn local_macs() -> Vec<String> {
+    physical_macs(&read_nics())
 }
 
 /// What `/sys/class/net/<if>` says of an interface.
@@ -170,7 +175,7 @@ fn has_battery() -> bool {
 
 /// An admin host takes about 15 GiB: a smaller disk is a USB stick, maybe the
 /// one of the backup, never an install target.
-const MIN_INSTALL_SIZE: u64 = 20_000_000_000;
+pub const MIN_INSTALL_SIZE: u64 = 20_000_000_000;
 
 fn candidate_disks(reclaimed: Option<&str>) -> Vec<Disk> {
     let busy = busy_disks(reclaimed);

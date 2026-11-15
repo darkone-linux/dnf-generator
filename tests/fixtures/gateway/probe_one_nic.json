@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "virt": "kvm",
+  "uefi": true,
+  "ram_bytes": 3041988608,
+  "nics": [
+    {"name": "enp0s2", "mac": "52:54:00:12:34:56", "link": true, "ipv4": ["192.168.1.50/24"], "wifi": false, "route": true},
+    {"name": "wlp3s0", "mac": "aa:bb:cc:00:10:03", "link": false, "ipv4": [], "wifi": true, "route": false}
+  ],
+  "disks": [
+    {"name": "sda", "dev": "/dev/sda", "by_id": "/dev/disk/by-id/ata-EXAMPLE_SSD_0001", "path": "/dev/disk/by-id/ata-EXAMPLE_SSD_0001", "size_bytes": 256060514304, "model": "EXAMPLE SSD"}
+  ]
+}

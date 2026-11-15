@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "virt": "none",
+  "uefi": true,
+  "ram_bytes": 8053063680,
+  "nics": [
+    {"name": "enp1s0", "mac": "aa:bb:cc:00:10:01", "link": true, "ipv4": ["192.168.1.50/24"], "wifi": false, "route": true},
+    {"name": "enp2s0", "mac": "aa:bb:cc:00:10:02", "link": false, "ipv4": [], "wifi": false, "route": false}
+  ],
+  "disks": [
+    {"name": "nvme0n1", "dev": "/dev/nvme0n1", "by_id": "/dev/disk/by-id/nvme-EXAMPLE_NVME_0001", "path": "/dev/disk/by-id/nvme-EXAMPLE_NVME_0001", "size_bytes": 512110190592, "model": "EXAMPLE NVME"},
+    {"name": "sda", "dev": "/dev/sda", "by_id": "/dev/disk/by-id/ata-EXAMPLE_HDD_0002", "path": "/dev/disk/by-id/ata-EXAMPLE_HDD_0002", "size_bytes": 2000398934016, "model": "EXAMPLE HDD"}
+  ]
+}

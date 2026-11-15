@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "virt": "kvm",
+  "uefi": true,
+  "ram_bytes": 3041988608,
+  "nics": [
+    {"name": "ens3", "mac": "52:54:00:12:34:56", "link": true, "ipv4": ["192.168.1.50/24"], "wifi": false, "route": true},
+    {"name": "ens4", "mac": "52:54:00:12:34:57", "link": true, "ipv4": [], "wifi": false, "route": false}
+  ],
+  "disks": [
+    {"name": "vda", "dev": "/dev/vda", "by_id": null, "path": "/dev/vda", "size_bytes": 34359738368, "model": ""}
+  ]
+}

@@ -493,7 +493,12 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 
 /// Same rendering as the `_log` recipe of `just/common/_helpers.just`.
 pub fn log(msg: &str) {
-    println!("[ \x1b[1;36mDNF\x1b[0m ] \x1b[1;35mNEW\x1b[0m • {msg}");
+    log_as("NEW", msg);
+}
+
+/// `log` under the tag of another command (`GATEWAY`).
+pub fn log_as(tag: &str, msg: &str) {
+    println!("[ \x1b[1;36mDNF\x1b[0m ] \x1b[1;35m{tag}\x1b[0m • {msg}");
 }
 
 #[cfg(test)]

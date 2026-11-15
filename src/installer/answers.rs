@@ -11,6 +11,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::catalog::Catalog;
@@ -112,11 +113,16 @@ pub struct Cache {
     pub public_key: Option<String>,
 }
 
+/// An answers file of any `darkone` command: unknown keys refused by its type.
+pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 impl Answers {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+        load_yaml(path)
     }
 
     /// Every field: none holds a passphrase, those only travel as files

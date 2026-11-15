@@ -1,0 +1,11 @@
+# Answers of `darkone add gateway`, for probe_two_nics.json.
+version: 1
+address: "192.168.1.50"
+host:
+  hostname: "gw"
+nics:
+  wan: "enp1s0"
+  lan: ["enp2s0"]
+disk:
+  device: "/dev/disk/by-id/ata-EXAMPLE_SSD_0001"
+confirm: true

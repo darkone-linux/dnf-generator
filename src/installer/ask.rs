@@ -31,7 +31,7 @@ pub(crate) fn aborted(e: io::Error) -> String {
 }
 
 /// Validator of a prompt, from the regex the plan checks too.
-fn rule(
+pub(crate) fn rule(
     pattern: &str,
     message: &'static str,
 ) -> impl Fn(&String) -> std::result::Result<(), &'static str> {

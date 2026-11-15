@@ -1,5 +1,6 @@
 //! `darkone`: the DNF assistant. `darkone new` installs the first host of a
-//! network, its admin host, from the DNF installer image.
+//! network, its admin host, from the DNF installer image; `darkone add
+//! gateway`, run on that admin host, its first gateway.
 
 use std::io::{ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
+use dnf_generator::gateway;
 use dnf_generator::installer::answers::{saved_answers_path, Answers, Plan, DEFAULT_IP_PREFIX};
 use dnf_generator::installer::ask::{self, PreviousRun};
 use dnf_generator::installer::catalog::Catalog;
@@ -29,6 +31,43 @@ enum Command {
     /// Install this machine as the first host of a new DNF network, its admin
     /// host. Erases the chosen disk.
     New(NewArgs),
+
+    /// Add a machine to the network of this admin host.
+    Add(AddArgs),
+}
+
+#[derive(Args)]
+struct AddArgs {
+    #[command(subcommand)]
+    what: AddCommand,
+}
+
+#[derive(Subcommand)]
+enum AddCommand {
+    /// Install the first gateway of the zone, on a machine booted on the DNF
+    /// installer image. Erases its disk.
+    Gateway(GatewayArgs),
+}
+
+#[derive(Args)]
+struct GatewayArgs {
+    /// Answers file (YAML): each answer it gives skips its question. Never the
+    /// pairing code, typed on the terminal.
+    #[arg(long, value_name = "FILE")]
+    answers: Option<PathBuf>,
+
+    /// Fail on any missing answer instead of asking.
+    #[arg(long)]
+    non_interactive: bool,
+
+    /// Show the plan and change nothing.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Probe JSON (`just _probe` output) instead of the machine: no pairing,
+    /// a plan without a machine (tests).
+    #[arg(long, value_name = "FILE", requires = "dry_run", hide = true)]
+    probe: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -84,8 +123,18 @@ struct NewArgs {
 }
 
 fn main() -> ExitCode {
-    let Command::New(args) = Cli::parse().command;
-    match new(args) {
+    let done = match Cli::parse().command {
+        Command::New(args) => new(args),
+        Command::Add(AddArgs {
+            what: AddCommand::Gateway(args),
+        }) => gateway::run(gateway::Options {
+            answers: args.answers,
+            non_interactive: args.non_interactive,
+            dry_run: args.dry_run,
+            probe: args.probe,
+        }),
+    };
+    match done {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("[ \x1b[1;36mDNF\x1b[0m ] \x1b[1;31mERR\x1b[0m • {e}");
