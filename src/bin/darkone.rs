@@ -60,7 +60,8 @@ struct GatewayArgs {
     #[arg(long)]
     non_interactive: bool,
 
-    /// Show the plan and change nothing.
+    /// Show the plan and the change to etc/config.yaml, write and install
+    /// nothing.
     #[arg(long)]
     dry_run: bool,
 

@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../dnf/config/config.schema.json
+#
+# My network, written by hand: comments and blank lines must survive an edit.
+
+network:
+  domain: home.arpa   # final
+  coordination:
+    enable: false
+
+
+# ---------------------------------------------------------------------------
+# Zones
+# ---------------------------------------------------------------------------
+
+zones:
+
+  # The only one for now
+  main:
+    description: 'Main network'  # shown on the portal
+    ipPrefix: "10.1"             # 10.1.0.0/16, final
+
+users:
+  alice:
+    uid: 1000
+    name: "Alice Martin"
+    profile: nix-admin
+    groups: [global]   # everywhere
+
+# ---------------------------------------------------------------------------
+# Hosts
+# ---------------------------------------------------------------------------
+
+hosts:
+
+  # The admin host, installed by darkone new
+  - hostname: poste
+    name: "Admin workstation"
+    zone: main            # DHCP of the box for now
+    profile: desktop
+    users: [alice]
+    disko:
+      profile: btrfs-1-disk
+      devices:
+        main: /dev/disk/by-id/nvme-EXAMPLE_SSD_0001  # do not touch
+
+  # A second machine, on a lease
+  - hostname: laptop
+    name: "Laptop of Alice"
+    zone: main
+    profile: desktop
+    users: [alice]
+
+  # A printer, outside DNF
+  # - hostname: printer
+  #   zone: main:9.1

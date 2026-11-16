@@ -50,6 +50,11 @@
             version = cargoToml.package.version;
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
+
+            # `cargo test` runs the real `yq` on etc/config.yaml fixtures
+            # (`darkone add gateway`); at run time it comes from the admin
+            # profile, with `just` and `git`.
+            nativeCheckInputs = [ pkgs.yq-go ];
             meta = {
               description = "Configuration generator for the Darkone NixOS Framework";
               mainProgram = "dnf-generator";

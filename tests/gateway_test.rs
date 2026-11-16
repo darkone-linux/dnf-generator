@@ -1,5 +1,6 @@
 //! `darkone add gateway`: the plan computed from a probe, on the project
-//! `darkone new` writes. Fixtures under `tests/fixtures/gateway/`.
+//! `darkone new` writes, then its `yq` edit of `etc/config.yaml` (real `yq`
+//! required). Fixtures under `tests/fixtures/gateway/`.
 
 use std::fs;
 use std::path::Path;
@@ -9,7 +10,8 @@ use tempfile::TempDir;
 use dnf_generator::gateway::answers::GatewayAnswers;
 use dnf_generator::gateway::plan::{AdminMac, AdminMachine, GatewayPlan};
 use dnf_generator::gateway::probe::Probe;
-use dnf_generator::gateway::project::{load_network, Network};
+use dnf_generator::gateway::project::{check_edit, load_network, Network};
+use dnf_generator::gateway::write::{check_yq, Edit};
 use dnf_generator::installer::answers::Plan;
 use dnf_generator::installer::project::render_config;
 
@@ -57,6 +59,7 @@ fn project(config: &str) -> TempDir {
     fs::write(root.join("dnf/config/modules.nix"), "{ }\n").unwrap();
     fs::create_dir_all(root.join("dnf/hosts/disko")).unwrap();
     fs::write(root.join("dnf/hosts/disko/btrfs-1-disk.nix"), "{ }\n").unwrap();
+    fs::write(root.join("dnf/hosts/disko/server-1-disk.nix"), "{ }\n").unwrap();
     fs::create_dir_all(root.join("etc")).unwrap();
     fs::write(root.join("etc/config.yaml"), config).unwrap();
     dir
@@ -380,4 +383,202 @@ fn project_needs_the_linked_framework() {
     fs::remove_file(dir.path().join("dnf/config/modules.nix")).unwrap();
     let err = load_network(dir.path()).unwrap_err();
     assert!(err.contains("is dnf/ linked"), "{err}");
+}
+
+// ─── etc/config.yaml edited by yq (spec 2b.5, step 5) ───────────────────────
+
+/// These tests run the real `yq`: without it they fail, never pass unseen.
+fn require_yq() {
+    if let Err(e) = check_yq() {
+        panic!("the yq tests need yq-go in PATH (nix develop, framework dev shell): {e}");
+    }
+}
+
+fn plan_on(config: &str) -> GatewayPlan {
+    GatewayPlan::resolve(
+        &nominal(),
+        &probe("probe_two_nics.json"),
+        &network(config),
+        &admin(),
+        None,
+    )
+    .unwrap()
+}
+
+/// The edit of `config` for the nominal plan, read back by the generator.
+fn edited(config: &str) -> (GatewayPlan, String) {
+    require_yq();
+    let plan = plan_on(config);
+    let out = Edit::from_plan(&plan).unwrap().apply(config).unwrap();
+    check_edit(project(config).path(), &out, &plan).unwrap();
+    (plan, out)
+}
+
+fn blank_lines(text: &str) -> usize {
+    text.lines().filter(|l| l.trim().is_empty()).count()
+}
+
+/// `kept` in `text`, in the same order: lines were only added around them.
+fn in_order(kept: &[&str], text: &str) -> bool {
+    let mut lines = text.lines();
+    kept.iter().all(|k| lines.any(|l| l == *k))
+}
+
+#[test]
+fn yq_edit_of_the_installer_config_only_adds() {
+    let config = render_config(&new_plan(&[]));
+    let (_, out) = edited(&config);
+
+    // One line changes, the zone of the admin host: every other one stays.
+    let kept: Vec<&str> = config
+        .lines()
+        .filter(|l| *l != "    zone: \"main\"")
+        .collect();
+    assert!(in_order(&kept, &out), "{out}");
+    assert_eq!(blank_lines(&out), blank_lines(&config) + 1, "{out}");
+    for fragment in [
+        "    ipPrefix: \"10.1\"\n    gateway:\n      wan:\n        interface: \"enp1s0\"\n      \
+         lan:\n        interfaces: [\"enp2s0\"]\n\nusers:\n",
+        "  - hostname: \"poste\"\n    name: \"Admin workstation\"\n    zone: \"main:2.1\"\n",
+        "    mac: \"aa:bb:cc:00:00:01\"\n\n  - hostname: \"gw\"\n    name: \"Gateway\"\n    \
+         zone: \"main:1.1\"\n    profile: \"gateway\"\n    disko:\n      profile: \"server-1-disk\"\n      \
+         devices:\n        main: \"/dev/disk/by-id/ata-EXAMPLE_SSD_0001\"\n",
+    ] {
+        assert!(out.contains(fragment), "{fragment}\nnot in\n{out}");
+    }
+    assert!(out.starts_with("# yaml-language-server: $schema="), "{out}");
+
+    // The generator must read the plan back: the unedited file does not.
+    let plan = plan_on(&config);
+    let err = check_edit(project(&config).path(), &config, &plan).unwrap_err();
+    assert!(err.contains("nothing written"), "{err}");
+    assert!(err.contains("gateway of the zone: None"), "{err}");
+
+    // Written, the project is the one `darkone add gateway` refuses.
+    let err = load_network(project(&out).path()).unwrap_err();
+    assert!(err.contains("already has a gateway, gw"), "{err}");
+}
+
+#[test]
+fn yq_edit_leaves_a_declared_mac_and_address_alone() {
+    let config = render_config(&new_plan(&["aa:bb:cc:00:00:09"]))
+        .replace("zone: \"main\"", "zone: \"main:4.2\"");
+    let (plan, out) = edited(&config);
+    assert!(!plan.admin.new_address);
+    assert!(out.contains("    zone: \"main:4.2\"\n"), "{out}");
+    assert_eq!(out.matches("mac:").count(), 1, "{out}");
+    assert!(out.contains("    mac: \"aa:bb:cc:00:00:09\"\n"), "{out}");
+
+    // Nothing but additions this time.
+    let kept: Vec<&str> = config.lines().collect();
+    assert!(in_order(&kept, &out), "{out}");
+}
+
+#[test]
+fn yq_edit_keeps_hand_written_comments_and_blank_lines() {
+    let config = fixture("config_commented.yaml");
+    let (_, out) = edited(&config);
+    for line in config.lines().filter(|l| l.contains('#')) {
+        let comment = line[line.find('#').unwrap()..].trim();
+        assert!(out.contains(comment), "comment lost: {comment}\n{out}");
+    }
+    assert!(blank_lines(&out) >= blank_lines(&config), "{out}");
+    for fragment in [
+        "    zone: main:2.1 # DHCP of the box for now\n",
+        "    gateway:\n      wan:\n        interface: \"enp1s0\"\n",
+        "  # A second machine, on a lease\n  - hostname: laptop\n",
+        "  - hostname: \"gw\"\n",
+        "# - hostname: printer\n",
+    ] {
+        assert!(out.contains(fragment), "{fragment}\nnot in\n{out}");
+    }
+}
+
+/// A marker comment inside a block scalar would end it: blank lines are
+/// dropped for that file, its values kept.
+#[test]
+fn yq_edit_survives_a_block_scalar_with_a_blank_line() {
+    let config = render_config(&new_plan(&[])).replace(
+        "    description: \"Main network\"\n",
+        "    description: |\n      Main network\n\n      second paragraph\n",
+    );
+    let (_, out) = edited(&config);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+    assert_eq!(
+        doc["zones"]["main"]["description"].as_str(),
+        Some("Main network\n\nsecond paragraph\n")
+    );
+}
+
+/// `strenv()` alone, the name checks left out: whatever a probed machine
+/// answers lands as a string, never as an expression or as YAML.
+#[test]
+fn yq_takes_hostile_values_as_plain_strings() {
+    require_yq();
+    let config = render_config(&new_plan(&[]));
+    let hostile = [
+        "eth0\"; .hosts = [] #",
+        "$(touch /tmp/pwned) `id` ${HOME}",
+        "x: {y: [1, 2]}\n- z",
+        "strenv(HOME) | env(PATH)",
+        "' || true",
+    ];
+    for value in hostile {
+        let mut edit = Edit::from_plan(&plan_on(&config)).unwrap();
+        edit.wan = value.to_string();
+        edit.disk = value.to_string();
+
+        // A comma separates the cards: that case is below.
+        let card = value.replace(',', ";");
+        edit.lan = vec![card.clone()];
+        let out = edit
+            .apply(&config)
+            .unwrap_or_else(|e| panic!("{value:?}: {e}"));
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let gateway = &doc["zones"]["main"]["gateway"];
+        assert_eq!(gateway["wan"]["interface"].as_str(), Some(value));
+        assert_eq!(
+            gateway["lan"]["interfaces"][0].as_str(),
+            Some(card.as_str())
+        );
+        let hosts = doc["hosts"].as_sequence().unwrap();
+        assert_eq!(hosts.len(), 2, "{value:?}");
+        assert_eq!(hosts[1]["disko"]["devices"]["main"].as_str(), Some(value));
+    }
+
+    // A comma would split one card in two: not the planned document, refused.
+    let mut edit = Edit::from_plan(&plan_on(&config)).unwrap();
+    edit.lan = vec!["enp2s0,enp3s0".to_string()];
+    let err = edit.apply(&config).unwrap_err();
+    assert!(err.contains("nothing written"), "{err}");
+}
+
+#[test]
+fn names_from_the_probe_are_checked_before_yq() {
+    let config = render_config(&new_plan(&[]));
+    let mut plan = plan_on(&config);
+    plan.wan.name = "eth0\"; .hosts = []".to_string();
+    plan.disk.path = "/dev/$(id)".to_string();
+    let err = Edit::from_plan(&plan).unwrap_err();
+    assert!(err.contains("unexpected characters"), "{err}");
+    assert!(
+        err.contains("card name") && err.contains("disk path"),
+        "{err}"
+    );
+
+    // The plan itself refuses them, a dry run included.
+    let json = fixture("probe_two_nics.json").replace("enp2s0", "enp2s0;reboot");
+    let a = answers("version: 1\naddress: 192.168.1.50\nnics:\n  lan: [\"enp2s0;reboot\"]\n");
+    let errs = GatewayPlan::resolve(
+        &a,
+        &Probe::parse(&json).unwrap(),
+        &installer_network(),
+        &admin(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        has(&errs, "card name with unexpected characters"),
+        "{errs:?}"
+    );
 }

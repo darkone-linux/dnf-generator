@@ -56,6 +56,21 @@ impl Configuration {
         registry: ServiceRegistry,
     ) -> Result<Self> {
         let main_str = std::fs::read_to_string(main_yaml)?;
+        let project_root = main_yaml
+            .parent()
+            .and_then(|p| p.parent())
+            .ok_or_else(|| NixError::generate("Cannot determine project root"))?;
+        Self::load_text(&main_str, generated_yaml, project_root, registry)
+    }
+
+    /// `load` on the text of the main YAML: an edit is checked before it is
+    /// written (`darkone add gateway`).
+    pub fn load_text(
+        main_str: &str,
+        generated_yaml: &Path,
+        project_root: &Path,
+        registry: ServiceRegistry,
+    ) -> Result<Self> {
         // The generated YAML acts as an overlay: it may not yet exist on a
         // fresh checkout, in which case we treat it as an empty mapping.
         let gen_str = if generated_yaml.exists() {
@@ -65,7 +80,7 @@ impl Configuration {
         };
 
         let merged = deep_merge(
-            serde_yaml::from_str(&main_str)?,
+            serde_yaml::from_str(main_str)?,
             serde_yaml::from_str(&gen_str)?,
         );
 
@@ -74,11 +89,6 @@ impl Configuration {
         let schema: ConfigFile = serde_path_to_error::deserialize(merged.clone()).map_err(|e| {
             NixError::validation(format!("config.yaml: {} (at {})", e.inner(), e.path()))
         })?;
-
-        let project_root = main_yaml
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| NixError::generate("Cannot determine project root"))?;
 
         let mut cfg = Configuration {
             users: IndexMap::new(),

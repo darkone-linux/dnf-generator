@@ -11,6 +11,7 @@ use regex::Regex;
 use super::answers::{GatewayAnswers, GATEWAY_ANSWERS_VERSION};
 use super::probe::{Probe, ProbeDisk, ProbeNic};
 use super::project::Network;
+use super::write::{valid_device, valid_nic};
 use crate::installer::machine::{human_size, Ipv4Net, MIN_INSTALL_SIZE};
 use crate::nix_generator::validation::RE_HOSTNAME;
 
@@ -468,7 +469,24 @@ fn nics(
             )),
         }
     }
-    (lan_nics.len() == lan.len()).then(|| (plan_nic(wan_nic), lan_nics))
+    if lan_nics.len() != lan.len() {
+        return None;
+    }
+
+    // Probed names end up in etc/config.yaml and in generated Nix.
+    let odd: Vec<String> = std::iter::once(wan_nic.name.as_str())
+        .chain(lan_nics.iter().map(|n| n.name.as_str()))
+        .filter(|name| !valid_nic(name))
+        .map(|name| format!("{name:?}"))
+        .collect();
+    if !odd.is_empty() {
+        errors.push(format!(
+            "card name with unexpected characters, not written to etc/config.yaml: {}",
+            odd.join(", ")
+        ));
+        return None;
+    }
+    Some((plan_nic(wan_nic), lan_nics))
 }
 
 fn disk(
@@ -519,6 +537,13 @@ fn disk(
             }
         },
     }?;
+    if !valid_device(&chosen.path) {
+        errors.push(format!(
+            "disk path with unexpected characters, not written to etc/config.yaml: {:?}",
+            chosen.path
+        ));
+        return None;
+    }
     if chosen.by_id.is_none() {
         warnings.push(format!(
             "{} has no /dev/disk/by-id name: the kernel name goes into disko.devices, \

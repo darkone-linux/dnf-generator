@@ -12,6 +12,9 @@ pkgs.mkShell {
     rust-analyzer
     pkg-config
     gcc
+
+    # `cargo test`: the etc/config.yaml edits of `darkone add gateway`.
+    yq-go
   ];
 
   shellHook = ''

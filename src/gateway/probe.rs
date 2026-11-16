@@ -75,7 +75,30 @@ impl Probe {
             }
             None => return Err("probe: no `schema` number".to_string()),
         }
-        serde_json::from_value(value).map_err(|e| format!("probe: {e}"))
+        let mut probe: Probe = serde_json::from_value(value).map_err(|e| format!("probe: {e}"))?;
+        probe.keep_printable();
+        Ok(probe)
+    }
+
+    /// Read over an ssh that checks no host key, then shown on this terminal:
+    /// printable ASCII only, the filter of the remote script applied again.
+    fn keep_printable(&mut self) {
+        let clean = |s: &mut String| s.retain(|c| (' '..='~').contains(&c));
+        clean(&mut self.virt);
+        for nic in &mut self.nics {
+            clean(&mut nic.name);
+            clean(&mut nic.mac);
+            nic.ipv4.iter_mut().for_each(clean);
+        }
+        for disk in &mut self.disks {
+            clean(&mut disk.name);
+            clean(&mut disk.dev);
+            clean(&mut disk.path);
+            clean(&mut disk.model);
+            if let Some(by_id) = &mut disk.by_id {
+                clean(by_id);
+            }
+        }
     }
 
     /// Wired cards, in the probe order: the only ones a gateway bridges or
@@ -147,6 +170,16 @@ mod tests {
 
         // Schema 1, a key missing: the probe is broken, not newer.
         assert!(Probe::parse(r#"{"schema":1}"#).is_err());
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_terminal() {
+        let hostile = SPEC_EXAMPLE
+            .replace("My Disk", "My\\u001b[2JDisk\\u0007é")
+            .replace("enp0s2", "enp\\u001b0s2");
+        let p = Probe::parse(&hostile).unwrap();
+        assert_eq!(p.disks[0].model, "My[2JDisk");
+        assert_eq!(p.nics[0].name, "enp0s2");
     }
 
     #[test]

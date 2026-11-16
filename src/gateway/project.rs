@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::plan::{AdminMac, GatewayPlan, DISKO_DISK, GATEWAY_PROFILE};
 use super::Result;
 use crate::installer::INSTALLER_MARKER;
 use crate::nix_generator::configuration::Configuration;
@@ -103,9 +104,13 @@ pub fn dirty(porcelain: &str) -> Option<String> {
     ))
 }
 
-/// Merged `etc/config.yaml`, through the service registry of the linked
-/// framework (`dnf/config/modules.nix`), as `just generate` reads it.
-pub fn load_network(root: &Path) -> Result<Network> {
+/// Where the configuration lives in a project.
+pub const CONFIG: &str = "etc/config.yaml";
+
+/// Merged configuration, through the service registry of the linked framework
+/// (`dnf/config/modules.nix`), as `just generate` reads it. `text`: the file,
+/// or its edit before it is written.
+pub fn load_config(root: &Path, text: &str) -> Result<Configuration> {
     let registry_path = root.join("dnf/config/modules.nix");
     let registry = ServiceRegistry::load(&registry_path).map_err(|e| {
         format!(
@@ -113,13 +118,118 @@ pub fn load_network(root: &Path) -> Result<Network> {
             registry_path.display()
         )
     })?;
-    let cfg = Configuration::load(
-        &root.join("etc/config.yaml"),
+    Configuration::load_text(
+        text,
         &root.join("var/generated/config.yaml"),
+        root,
         registry,
     )
-    .map_err(|e| format!("etc/config.yaml: {e}"))?;
-    network_of(&cfg)
+    .map_err(|e| format!("{CONFIG}: {e}"))
+}
+
+pub fn load_network(root: &Path) -> Result<Network> {
+    let config = root.join(CONFIG);
+    let text =
+        std::fs::read_to_string(&config).map_err(|e| format!("{}: {e}", config.display()))?;
+    network_of(&load_config(root, &text)?)
+}
+
+/// The edit, read by the generator before it is written: it must load, and
+/// say what the plan says.
+pub fn check_edit(root: &Path, edited: &str, plan: &GatewayPlan) -> Result<()> {
+    let refused = |why: String| format!("the edited {CONFIG} is refused, nothing written: {why}");
+    let cfg = load_config(root, edited).map_err(refused)?;
+    let text = |v: Option<&serde_yaml::Value>| v.and_then(|v| v.as_str()).map(str::to_string);
+    let gateway = cfg
+        .network
+        .zones
+        .get(&plan.zone)
+        .and_then(|z| z.config.get("gateway"));
+    let part = |a: &str, b: &str| text(gateway.and_then(|g| g.get(a)).and_then(|g| g.get(b)));
+    let host = cfg.hosts.get(&plan.hostname);
+    let admin = cfg.hosts.get(&plan.admin.hostname);
+    let lan: Vec<String> = gateway
+        .and_then(|g| g.get("lan"))
+        .and_then(|l| l.get("interfaces"))
+        .and_then(|i| i.as_sequence())
+        .map(|s| s.iter().filter_map(|v| text(Some(v))).collect())
+        .unwrap_or_default();
+
+    // The generator resolves the layout to `dnf/hosts/disko/<profile>.nix`.
+    let layout = host
+        .and_then(|h| h.disko.profile.as_deref())
+        .and_then(|p| Path::new(p).file_stem())
+        .map(|p| p.to_string_lossy().into_owned());
+    let mut facts = vec![
+        (
+            "gateway of the zone",
+            text(gateway.and_then(|g| g.get("hostname"))),
+            Some(plan.hostname.clone()),
+        ),
+        (
+            "its LAN address",
+            part("lan", "ip"),
+            Some(plan.lan_ip.clone()),
+        ),
+        (
+            "its WAN card",
+            part("wan", "interface"),
+            Some(plan.wan.name.clone()),
+        ),
+        (
+            "its LAN cards",
+            Some(lan.join(",")),
+            Some(
+                plan.lan
+                    .iter()
+                    .map(|n| n.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
+        (
+            "its address",
+            host.and_then(|h| h.ip.clone()),
+            Some(plan.lan_ip.clone()),
+        ),
+        (
+            "its profile",
+            host.map(|h| h.profile.clone()),
+            Some(GATEWAY_PROFILE.to_string()),
+        ),
+        ("its disk layout", layout, Some(plan.disko_profile.clone())),
+        (
+            "its disk",
+            host.and_then(|h| h.disko.devices.get(DISKO_DISK).cloned()),
+            Some(plan.disk.path.clone()),
+        ),
+        (
+            "address of the admin host",
+            admin.and_then(|h| h.ip.clone()),
+            Some(plan.admin.ip.clone()),
+        ),
+    ];
+    match &plan.admin.mac {
+        AdminMac::Declared(mac) | AdminMac::Add(mac) => facts.push((
+            "MAC of the admin host",
+            admin.and_then(|h| h.mac.clone()),
+            Some(mac.clone()),
+        )),
+        AdminMac::Unknown => {}
+    }
+    let wrong: Vec<String> = facts
+        .into_iter()
+        .filter(|(_, got, want)| got != want)
+        .map(|(what, got, want)| format!("{what}: {got:?}, expected {want:?}"))
+        .collect();
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(refused(format!(
+            "the generator does not read the plan back ({})",
+            wrong.join("; ")
+        )))
+    }
 }
 
 /// The zone of `darkone new`, still without a gateway: the only case

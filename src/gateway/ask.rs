@@ -112,25 +112,42 @@ fn disk(answers: &mut GatewayAnswers, proposals: &Proposals) -> Result<()> {
     Ok(())
 }
 
-/// The plan of a dry run, which ends the session.
-pub fn show(recap: &str) -> Result<()> {
-    cliclack::note("Plan", recap).map_err(aborted)?;
+/// End of a dry run: plan and diff are shown.
+pub fn dry_run_done() -> Result<()> {
     cliclack::outro("Dry run: nothing changed").map_err(aborted)
 }
 
-/// The plan, then a confirmation that defaults to no.
-pub fn confirm(recap: &str, hostname: &str, disk: &str) -> Result<()> {
+/// The plan, then a confirmation that defaults to no. A short question:
+/// the recap above names the disk.
+pub fn confirm(recap: &str) -> Result<()> {
     cliclack::note("Plan", recap).map_err(aborted)?;
-    let go = cliclack::confirm(format!(
-        "Write etc/config.yaml, erase {disk} and install {hostname}?"
+    agreed("Go on with this plan? The change to etc/config.yaml is shown first".to_string())
+}
+
+/// After the diff of `etc/config.yaml`: `yq` may have touched its layout.
+/// Last question before the disk is erased.
+pub fn confirm_diff(hostname: &str) -> Result<()> {
+    agreed(format!(
+        "Write this change, erase the disk and install {hostname}?"
     ))
-    .initial_value(false)
-    .interact()
-    .map_err(aborted)?;
+}
+
+fn agreed(question: String) -> Result<()> {
+    let go = cliclack::confirm(question)
+        .initial_value(false)
+        .interact()
+        .map_err(aborted)?;
     if go {
         Ok(())
     } else {
         cliclack::outro_cancel("Nothing changed").ok();
         Err("aborted, nothing changed".to_string())
     }
+}
+
+/// End of the session: the step reached, the next one. Nothing to abort
+/// any more: a terminal gone is no failure of the install.
+pub fn done(headline: &str, next: &str) {
+    cliclack::note("Next", next).ok();
+    cliclack::outro(headline).ok();
 }

@@ -25,8 +25,8 @@ pub struct GatewayAnswers {
     pub nics: Nics,
     pub disk: Disk,
 
-    /// The recap is accepted: config written, disk erased. Scripted runs need
-    /// it, `--dry-run` aside.
+    /// The recap and the diff of `etc/config.yaml` are accepted: config
+    /// written, disk erased. Scripted runs need it, `--dry-run` aside.
     pub confirm: Option<bool>,
 }
 

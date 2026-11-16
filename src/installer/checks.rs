@@ -145,6 +145,12 @@ fn probe(base: &str) -> Option<String> {
     }
 }
 
+/// Internet as an install needs it, cache.nixos.org: `None` when it answers.
+/// Bounded by the timeouts of `curl`.
+pub fn internet_error() -> Option<String> {
+    probe(MAIN_CACHE)
+}
+
 /// All the checks. The extra cache only ever warns: the install falls back
 /// to cache.nixos.org.
 pub fn run(extra_cache: Option<&str>) -> Report {
