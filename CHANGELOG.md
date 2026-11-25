@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.4.1] - 2026-11-25
+
+### Added
+
+- **installer**: Darkone add gateway pairs, probes and plans, dry run
+- **installer**: Darkone add gateway writes config, installs and checks
+
 ## [0.4.0] - 2026-11-13
 
 ### Added
@@ -137,7 +144,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **gen**: Separated files for modules
 
-[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/darkone-linux/dnf-generator/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/darkone-linux/dnf-generator/compare/v0.3.0...v0.3.1
