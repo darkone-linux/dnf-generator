@@ -15,6 +15,11 @@ pkgs.mkShell {
 
     # `cargo test`: the etc/config.yaml edits of `darkone add gateway`.
     yq-go
+
+    # CI runs the `just` recipes (`ci`, `audit`); `just bump` renders the
+    # CHANGELOG with git-cliff.
+    just
+    git-cliff
   ];
 
   shellHook = ''

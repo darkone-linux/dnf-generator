@@ -1,19 +1,46 @@
 name: Cargo Tests
 
+# `workflow_call`: release.yml replays the exact same gates on a tag instead of
+# duplicating them and letting the two drift.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
+permissions:
+  contents: read
+
+# Every step calls the `just` recipe `just release` runs locally: CI and the
+# release gate cannot disagree on what "green" means.
 jobs:
   cargo-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Run Cargo tests
-        run: nix develop --command cargo test --quiet
+        run: nix develop --command just ci
+
+  # The installer drives passwordless `sudo` on the install image: a known
+  # advisory in its dependency tree blocks the merge and the release.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: cargo audit
+        run: nix develop --command just audit

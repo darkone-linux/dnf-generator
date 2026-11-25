@@ -1,0 +1,82 @@
+name: Release
+
+# Pushed by `just release` or the workspace release train. The tag is what the
+# framework pins (`dnf/flake.nix`), so it is gated: the tree agrees with the
+# tag, the CHANGELOG documents it, CI is green.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Release guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # `[package]` table only: a dependency table may carry a `version =` too.
+      - name: Cargo.toml version matches the tag
+        run: |
+          set -euo pipefail
+          declared="v$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p&&/^version *=/{split($0,a,"\"");print a[2];exit}' Cargo.toml)"
+          if [ "$declared" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Cargo.toml says $declared, tag says $GITHUB_REF_NAME — run 'just bump'."
+            exit 1
+          fi
+
+      - name: CHANGELOG documents the release
+        run: |
+          set -euo pipefail
+          if ! grep -qE "^## \[${GITHUB_REF_NAME#v}\] - " CHANGELOG.md; then
+            echo "::error::No '## [${GITHUB_REF_NAME#v}]' entry in CHANGELOG.md."
+            exit 1
+          fi
+
+  # Tests on the committed Cargo.lock (`--locked`) and audit: what the
+  # framework's Nix build of this tag relies on.
+  verify:
+    name: Verify
+    uses: ./.github/workflows/cargo-tests.yml
+
+  publish:
+    name: Publish GitHub release
+    needs: [guard, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # The only job allowed to write: creating the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The tag's own CHANGELOG section, verbatim: the release notes and the
+      # file cannot say two different things.
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## \\[" v "\\] - " { inside = 1; next }
+            inside && /^## \[/ { exit }
+
+            # The oldest entry runs into the reference-link footer.
+            inside && /^\[[^]]+\]: / { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::Empty release notes."; exit 1; }
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

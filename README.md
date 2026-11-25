@@ -67,8 +67,28 @@ just build          # cargo build --release
 just test           # cargo test --quiet
 just test-verbose   # cargo test -- --nocapture
 just check          # build + test
+just ci             # what CI runs: cargo test --locked
+just audit          # cargo audit (RustSec advisories)
 just run <command>  # cargo run -- <command>
 ```
+
+### Releases
+
+Conventional commits, one line, closed type list: the CHANGELOG entry is
+generated from them. From the DNF co-development workspace:
+
+```sh
+just changelog                  # preview the next CHANGELOG entry
+just release [auto|patch|minor|major|X.Y.Z] [--yes]
+```
+
+`just release` runs the CI and audit gates, bumps `Cargo.toml` and
+`Cargo.lock`, writes the CHANGELOG entry, commits, tags and pushes; the tag
+workflow checks it and publishes the GitHub release with that entry as notes.
+It asks for confirmation first; without a terminal, pass `--yes`. The
+framework pins the tag in `dnf/flake.nix`: the workspace release train
+(`just release` at its root) does it on its next run, and releases this
+repository itself when it moved.
 
 ## Architecture
 
